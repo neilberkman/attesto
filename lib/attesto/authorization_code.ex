@@ -21,7 +21,7 @@ defmodule Attesto.AuthorizationCode do
 
   ## Single use even on failure
 
-  `redeem/4` consumes the code via `Attesto.CodeStore.take/1` **before**
+  `redeem/4` consumes the code via `c:Attesto.CodeStore.take/1` **before**
   validating it, so a presented code is spent whether or not the
   redemption succeeds. An attacker who captures a code cannot make
   repeated validation attempts against it.
