@@ -1,0 +1,237 @@
+# Attesto
+
+[![Hex.pm](https://img.shields.io/hexpm/v/attesto)](https://hex.pm/packages/attesto)
+[![Hexdocs.pm](https://img.shields.io/badge/docs-hexdocs.pm-blue)](https://hexdocs.pm/attesto)
+[![Hex Downloads](https://img.shields.io/hexpm/dt/attesto)](https://hex.pm/packages/attesto)
+[![Elixir CI](https://github.com/neilberkman/attesto/actions/workflows/elixir.yml/badge.svg)](https://github.com/neilberkman/attesto/actions/workflows/elixir.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/neilberkman/attesto/blob/main/LICENSE)
+[![Elixir](https://img.shields.io/badge/elixir-%E2%89%A5%201.18-purple)](https://elixir-lang.org)
+
+A vendor-neutral OAuth 2.0 / OIDC engine for Elixir, with first-class support for sender-constrained access tokens: DPoP and mutual-TLS.
+
+Attesto is the engine, not the framework. It mints and verifies JWTs, binds them to a sender, and validates proofs and scopes. You bring the principals, the keys, and the policy. It carries no opinion about your identity provider, your web layer, or your persistence.
+
+## Contents
+
+- [Why this library](#why-this-library)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Configure once](#configure-once)
+  - [Mint and verify a token](#mint-and-verify-a-token)
+  - [Sender-constrain a token to a DPoP key](#sender-constrain-a-token-to-a-dpop-key)
+  - [Match scopes](#match-scopes)
+- [What you supply / what's in the box](#what-you-supply--whats-in-the-box)
+- [RFC coverage](#rfc-coverage)
+- [Plug integration (optional)](#plug-integration-optional)
+- [Cluster safety](#cluster-safety)
+- [Status](#status)
+- [Development](#development)
+- [License](#license)
+
+## Why this library
+
+- **Vendor-neutral.** No coupling to Auth0, Okta, Cognito, or any particular IdP. The token shape is yours, and the same issuer can serve several kinds of principal (a machine client, a human session) from one signing key and one verifier.
+- **Sender-constrained by design.** DPoP (RFC 9449) and certificate-bound tokens (RFC 8705) are part of the core, with the `cnf` binding matrix enforced on both issue and verify.
+- **Protocol, not policy.** Attesto pins the algorithm, selects the key by `kid`, canonicalises thumbprints, compares in constant time, and rejects replay. Whether a given principal may hold a given scope stays in your application.
+- **Pluggable keys.** Use the bundled static keystore (which derives the public half from the private key so the two can never drift), or implement the `Attesto.Keystore` behaviour against your own KMS or rotation story.
+- **Cross-language parity.** The test suite verifies Attesto-issued tokens and proofs against a reference implementation in another language, so the wire format is exactly what other ecosystems expect.
+
+## Installation
+
+```elixir
+def deps do
+  [
+    {:attesto, "~> 0.5"}
+  ]
+end
+```
+
+## Usage
+
+### Configure once
+
+Declare the principal kinds your issuer serves, point Attesto at a keystore, and name your issuer and audience.
+
+```elixir
+config =
+  Attesto.Config.new(
+    issuer: "https://api.example.com/",
+    audience: "https://api.example.com/",
+    keystore: Attesto.Keystore.Static,
+    principal_kinds: [
+      Attesto.PrincipalKind.new("client", "oc_",
+        required_claims: [{"client_id", :non_empty_string}]
+      ),
+      Attesto.PrincipalKind.new("user", "usr_",
+        required_claims: [
+          {"act", :non_empty_string},
+          {"sid", :non_empty_string},
+          {"token_version", :non_neg_integer}
+        ]
+      )
+    ]
+  )
+```
+
+The static keystore reads its signing key from application config:
+
+```elixir
+config :attesto, Attesto.Keystore.Static,
+  signing_pem: System.fetch_env!("OAUTH_SIGNING_PRIVATE_KEY_PEM")
+```
+
+### Mint and verify a token
+
+```elixir
+{:ok, token} =
+  Attesto.Token.mint(config, %{
+    kind: "client",
+    sub: "oc_live_4f2a",
+    scopes: ["documents.read", "documents.write"],
+    claims: %{"client_id" => "oc_live_4f2a"}
+  })
+
+# token.access_token  -> the compact JWS
+# token.token_type    -> "Bearer"
+# token.expires_in    -> 900
+# token.scope         -> "documents.read documents.write"
+
+{:ok, claims} = Attesto.Token.verify(config, token.access_token)
+# claims["sub"]   -> "oc_live_4f2a"
+# claims["scope"] -> "documents.read documents.write"
+```
+
+### Sender-constrain a token to a DPoP key
+
+Pass a JWK thumbprint at issue time, then verify the proof and the binding together on each request.
+
+```elixir
+{:ok, token} =
+  Attesto.Token.mint(config, principal, dpop_jkt: proof_key_thumbprint)
+# token.token_type -> "DPoP"
+
+{:ok, proof} =
+  Attesto.DPoP.verify_proof(dpop_proof_jwt,
+    http_method: "POST",
+    http_uri: "https://api.example.com/documents",
+    access_token: token.access_token,
+    replay_check: &Attesto.DPoP.ReplayCache.check_and_record/2
+  )
+
+{:ok, _claims} =
+  Attesto.Token.verify(config, token.access_token, dpop_jkt: proof.jkt)
+```
+
+A DPoP- or mTLS-bound token presented without (or with a mismatched) proof is rejected, and a proof presented against a token that is not bound that way is rejected too.
+
+### Match scopes
+
+```elixir
+catalog = Attesto.Scope.new_catalog(~w(documents.read documents.write reports.read))
+
+Attesto.Scope.grants?(catalog, ["documents.*"], "documents.write")
+# => true
+
+Attesto.Scope.grants_all?(catalog, ["documents.read"], ["documents.write"])
+# => false
+```
+
+## What you supply / what's in the box
+
+| What you supply | What's in the box |
+| --- | --- |
+| Principal definitions (`Attesto.PrincipalKind`) | Token issue and verify (`Attesto.Token`) |
+| Signing / verification keys, rotation (`Attesto.Keystore`) | RS256 JWS signing, `kid` selection, claim validation |
+| Authorization policy ("may this principal do X?") | DPoP proof verification + replay protection (`Attesto.DPoP`) |
+| HTTP layer, routing, plugs | mTLS certificate-binding checks (`Attesto.MTLS`) |
+| Persistence, sessions, IdP integration | Scope grant-form matching (`Attesto.Scope`) |
+| Issuer / audience values (`Attesto.Config`) | Canonical SHA-256 thumbprints (`Attesto.Thumbprint`) |
+
+If a decision depends on your business rules, it is yours. If it is a wire-format or cryptographic check defined by an RFC, it is Attesto's.
+
+## RFC coverage
+
+| RFC | Title | Status |
+| --- | --- | --- |
+| RFC 7519 | JSON Web Token (JWT) | Supported |
+| RFC 7515 | JSON Web Signature (JWS) | Supported |
+| RFC 7517 | JSON Web Key (JWK) | Supported |
+| RFC 7638 | JWK Thumbprint | Supported |
+| RFC 7800 | Proof-of-Possession Key Semantics (`cnf`) | Supported |
+| RFC 8705 | Mutual-TLS / Certificate-Bound Access Tokens | Supported |
+| RFC 9449 | Demonstrating Proof of Possession (DPoP) | Supported |
+| RFC 6749 §4.1 | Authorization-code grant (single-use, PKCE-mandatory) | Supported |
+| RFC 6749 §6 / §10.4 | Refresh-token rotation + reuse detection | Supported |
+| RFC 6749 §3.3 | Access-token scope | Supported |
+| RFC 7636 | Proof Key for Code Exchange (PKCE) | Supported (S256) |
+| RFC 8414 | Authorization Server Metadata (discovery) | Supported |
+| RFC 7517 | JSON Web Key Set publication (JWKS endpoint) | Supported |
+| RFC 7009 | Token Revocation (refresh-token family) | Supported |
+| RFC 9449 §8 | DPoP server-issued nonce | Supported |
+| RFC 9068 | JWT access-token `typ: "at+jwt"` header | Supported |
+
+## Plug integration (optional)
+
+The core is plain functions, but a thin optional Plug layer wires them to
+a Phoenix/Plug pipeline so you don't hand-roll header parsing, `htu`
+construction, replay enforcement, the mTLS thumbprint handoff, or the
+standard error responses:
+
+```elixir
+plug Attesto.Plug.Authenticate,
+  config: &MyApp.Attesto.config/0,
+  replay_check: &MyApp.DPoPReplay.check_and_record/2,
+  cert_der: &MyApp.TLS.client_cert_der/1
+
+plug Attesto.Plug.RequireScopes, ["documents.read"]
+```
+
+`Authenticate` parses `Authorization: Bearer …` / `DPoP …`, verifies the
+DPoP proof and the access token (and the mTLS binding when `:cert_der`
+returns a certificate), and assigns the verified claims.
+`Attesto.Plug.OAuthError` renders the RFC 6750 / RFC 9449 responses
+(`WWW-Authenticate`, `DPoP-Nonce`, `invalid_token`, `invalid_dpop_proof`,
+`insufficient_scope`, `use_dpop_nonce`). `Plug` is an optional dependency:
+add it only if you use this layer. The token-endpoint grant logic stays
+yours - client auth, policy, and store wiring are too host-specific for a
+fixed plug.
+
+## Cluster safety
+
+The engine is pure and stateless, so it is **cluster-safe by
+construction**: the same token/proof verifies to the same result on any
+node. All *state* (authorization codes, refresh-token families, seen DPoP
+`jti` values, DPoP nonces) lives behind storage behaviours whose contracts
+mandate the atomic primitives (atomic `take`, atomic compare-and-set
+`consume`, sticky family revocation). Implement those behaviours over a
+shared store (Postgres, Redis) and the whole system is cluster-safe.
+
+The bundled ETS reference stores are deliberately **single-node** - a
+captured credential would otherwise be replayable once per node. Rather
+than fail silently, every ETS store (`CodeStore.ETS`, `RefreshStore.ETS`,
+`DPoP.ReplayCache`, `DPoP.NonceStore.ETS`) **refuses to boot on a clustered
+BEAM** unless you pass `multi_node_acknowledged?: true`, which forces the
+choice: wire a shared store, or explicitly accept the single-node
+constraint.
+
+## Status
+
+A `0.x` release: still pre-1.0, so the API may change between minor versions (read the CHANGELOG before upgrading). Implemented and tested: token issue/verify, DPoP, mTLS, scope, keystore, PKCE, JWKS publication, OIDC discovery, the authorization-code grant (single-use, PKCE-mandatory, optional DPoP binding), refresh-token rotation with reuse detection, and token revocation (RFC 7009, refresh-token family). The stateful grants run against the `Attesto.CodeStore` / `Attesto.RefreshStore` behaviours, with ETS reference implementations included; a production host implements those over its own database (the atomic-`take` and atomic-`consume` contracts are documented). Cross-language parity tests check Attesto-issued artifacts against a reference implementation in another language. Pin to `~> 0.5`.
+
+## Development
+
+```sh
+mix deps.get
+mix test
+mix precommit   # format --check-formatted, compile --warnings-as-errors, credo --strict, test
+```
+
+The cross-language parity tests drive a reference `joserfc` / `cryptography`
+stack in-process via `erlang_python` and run as part of `mix test` (they
+self-skip when that Python stack is not installed). Install it with
+`pip install joserfc cryptography` against the interpreter `erlang_python`
+loads.
+
+## License
+
+MIT, Copyright (c) Neil Berkman. See [LICENSE](LICENSE).

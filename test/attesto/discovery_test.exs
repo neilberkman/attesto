@@ -1,0 +1,86 @@
+defmodule Attesto.DiscoveryTest do
+  @moduledoc false
+  use ExUnit.Case, async: true
+
+  alias Attesto.Config
+  alias Attesto.Discovery
+  alias Attesto.DPoP
+  alias Attesto.Keystore.Static
+  alias Attesto.PrincipalKind
+
+  # A Config whose keystore is never called (Discovery reads only the
+  # issuer and token-endpoint path), so no app env is needed.
+  defp config(overrides \\ []) do
+    [
+      issuer: "https://auth.example.com/",
+      audience: "https://api.example.com/",
+      keystore: Static,
+      principal_kinds: [PrincipalKind.new("client", "oc_")]
+    ]
+    |> Keyword.merge(overrides)
+    |> Config.new()
+  end
+
+  describe "metadata/2 protocol-fixed and derived fields" do
+    test "derives issuer, token_endpoint, and jwks_uri" do
+      meta = Discovery.metadata(config())
+
+      assert meta["issuer"] == "https://auth.example.com/"
+      assert meta["token_endpoint"] == "https://auth.example.com/oauth/token"
+      assert meta["jwks_uri"] == "https://auth.example.com/.well-known/jwks.json"
+    end
+
+    test "advertises S256 PKCE and the DPoP algorithm set" do
+      meta = Discovery.metadata(config())
+
+      assert meta["code_challenge_methods_supported"] == ["S256"]
+      assert meta["dpop_signing_alg_values_supported"] == DPoP.allowed_algs()
+    end
+
+    test "defaults grant_types_supported to client_credentials" do
+      assert Discovery.metadata(config())["grant_types_supported"] == ["client_credentials"]
+    end
+
+    test "honors a custom token_endpoint_path in the derived token_endpoint" do
+      meta = Discovery.metadata(config(token_endpoint_path: "/oauth2/v1/token"))
+      assert meta["token_endpoint"] == "https://auth.example.com/oauth2/v1/token"
+    end
+  end
+
+  describe "metadata/2 host-supplied fields" do
+    test "includes only the host endpoints and lists that are provided" do
+      meta =
+        Discovery.metadata(config(),
+          authorization_endpoint: "https://auth.example.com/authorize",
+          scopes_supported: ["documents.read", "documents.write"],
+          token_endpoint_auth_methods_supported: ["client_secret_basic", "none"]
+        )
+
+      assert meta["authorization_endpoint"] == "https://auth.example.com/authorize"
+      assert meta["scopes_supported"] == ["documents.read", "documents.write"]
+      assert meta["token_endpoint_auth_methods_supported"] == ["client_secret_basic", "none"]
+
+      # Endpoints not supplied are absent, not nil.
+      refute Map.has_key?(meta, "revocation_endpoint")
+      refute Map.has_key?(meta, "registration_endpoint")
+      refute Map.has_key?(meta, "userinfo_endpoint")
+    end
+
+    test "a nil host value is dropped rather than advertised" do
+      meta = Discovery.metadata(config(), revocation_endpoint: nil)
+      refute Map.has_key?(meta, "revocation_endpoint")
+    end
+
+    test "an explicit jwks_uri overrides the derived one" do
+      meta = Discovery.metadata(config(), jwks_uri: "https://keys.example.com/jwks")
+      assert meta["jwks_uri"] == "https://keys.example.com/jwks"
+    end
+
+    test "grant_types_supported can be overridden" do
+      meta =
+        Discovery.metadata(config(), grant_types_supported: ~w(client_credentials authorization_code refresh_token))
+
+      assert meta["grant_types_supported"] == ~w(client_credentials authorization_code refresh_token)
+    end
+  end
+end

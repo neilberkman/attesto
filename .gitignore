@@ -1,0 +1,19 @@
+# The directory Mix downloads dependencies into.
+/deps/
+# Build artifacts.
+/_build/
+# Generated docs.
+/doc/
+# Crash dumps.
+erl_crash.dump
+# Lock file is committed for the library's own CI, but the path-dep
+# consumer resolves against its own lock, so keep it out of the way of
+# the host app. (Committed intentionally; listed here as a reminder of
+# what is and is not tracked.)
+*.beam
+# `mix hex.build` output (extracted package dir + tarball).
+/attesto-*/
+*.tar
+# Python bytecode from the parity-test reference module.
+__pycache__/
+*.pyc

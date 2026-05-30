@@ -1,0 +1,567 @@
+defmodule Attesto.DPoP do
+  @moduledoc """
+  RFC 9449 - OAuth 2.0 Demonstrating Proof of Possession (DPoP).
+
+  A DPoP proof is a JWS that a client signs with a key it holds and
+  attaches to a token request (`POST /token`) or to every
+  protected-resource request that uses a DPoP-bound access token. The
+  proof carries:
+
+    * a JOSE header with `typ: "dpop+jwt"`, an asymmetric signature
+      `alg`, and the client's public key in `jwk`;
+    * a JOSE payload with `htm` (HTTP method), `htu` (HTTP target URI),
+      `iat` (creation timestamp), `jti` (unique replay identifier), and -
+      when presented alongside an access token - `ath`, the
+      base64url-encoded SHA-256 hash of that access token.
+
+  The server validates the proof against the live request, computes the
+  RFC 7638 SHA-256 thumbprint of the embedded JWK, and uses the
+  thumbprint to bind issued/presented access tokens to the proof key via
+  the access token's `cnf.jkt` claim (RFC 7800).
+
+  This module verifies a single DPoP proof and returns the thumbprint and
+  replay identifier so the caller (the token endpoint or the
+  authenticated-request handler) can:
+
+    * compare `jkt` to the bound access token's `cnf.jkt`, and
+    * persist `jti` in a replay cache.
+
+  It is framework-agnostic: no Plug, no database, no application config.
+  It is a pure function of the proof JWT, the HTTP request context, and
+  an optional access token. A resource server composes
+  `Attesto.Token.verify/3` with this module's `verify_proof/2`.
+
+  ## Accepted algorithms
+
+  Per RFC 9449 §4.2, DPoP proofs MUST be signed with an asymmetric
+  algorithm. This verifier whitelists `ES256`, `ES384`, `ES512`, `RS256`,
+  `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, and `EdDSA`. Symmetric
+  algorithms (`HS*`) and the unsecured `none` algorithm are rejected;
+  there is no caller-facing knob to relax this.
+
+  ## Replay protection
+
+  RFC 9449 §11.1 requires the resource server to reject a DPoP proof it
+  has already seen. A captured-and-replayed proof is otherwise good for
+  the entire `iat` acceptance window (default 60 seconds). This verifier
+  enforces replay protection in two layers:
+
+    1. The proof's `jti` is length-capped (see `@max_jti_length`) so an
+      attacker cannot exhaust the cache by submitting proofs with
+      megabyte-sized `jti` values.
+    2. If the caller supplies the `:replay_check` opt, the verifier
+      invokes it with the proof's `jti` AND the TTL the cache must remember
+      it for (the acceptance window: `max_age_seconds` + future skew),
+      AFTER every other check has passed (so an attacker cannot fill the
+      cache with proofs that would have failed anyway). Deriving the TTL
+      from the verifier's age policy keeps the cache from forgetting a
+      `jti` while the proof is still acceptable. The callback returns `:ok`
+      or `{:error, :replay}`. `Attesto.DPoP.ReplayCache` provides a default
+      ETS-backed implementation (`check_and_record/2`).
+
+  Protected-resource pipelines MUST pass `:replay_check`. Leaving it out
+  is acceptable only in test scaffolding and at the token endpoint on
+  first use of a proof (the endpoint records the `jti` itself).
+  """
+
+  alias Attesto.SecureCompare
+  alias Attesto.Thumbprint
+
+  # RFC 9449 §4.2: asymmetric algorithms only.
+  @allowed_algs ~w(ES256 ES384 ES512 RS256 RS384 RS512 PS256 PS384 PS512 EdDSA)
+  @proof_typ "dpop+jwt"
+  @default_max_age_seconds 60
+  # Modest leeway for client clocks that are slightly ahead of ours.
+  @future_skew_seconds 5
+  # RFC 9449 places no upper bound on `jti` length, but the replay cache
+  # holds every `jti` for the entire acceptance window. A malicious
+  # client could exhaust memory with megabyte-sized values; cap at 256
+  # bytes (a UUID is 36, a 256-bit b64url id is 43, so the cap is
+  # generous for any legitimate scheme).
+  @max_jti_length 256
+
+  @type replay_check_fun :: (String.t(), pos_integer() -> :ok | {:error, :replay})
+  @type nonce_check_fun :: (String.t() | nil -> :ok | {:error, :use_dpop_nonce})
+
+  @type verify_opts :: [
+          {:http_method, String.t()}
+          | {:http_uri, String.t()}
+          | {:access_token, String.t() | nil}
+          | {:now, DateTime.t() | non_neg_integer()}
+          | {:max_age_seconds, pos_integer()}
+          | {:replay_check, replay_check_fun() | nil}
+          | {:nonce_check, nonce_check_fun() | nil}
+        ]
+
+  @type verified_proof :: %{
+          ath: String.t() | nil,
+          htm: String.t(),
+          htu: String.t(),
+          iat: non_neg_integer(),
+          jkt: String.t(),
+          jti: String.t()
+        }
+
+  @type verify_error ::
+          :invalid_proof
+          | :invalid_signature
+          | :invalid_typ
+          | :invalid_alg
+          | :unsupported_critical_header
+          | :missing_jwk
+          | :invalid_jwk
+          | :invalid_htm
+          | :invalid_htu
+          | :missing_jti
+          | :invalid_jti
+          | :missing_ath
+          | :invalid_ath
+          | :missing_iat
+          | :invalid_iat
+          | :proof_expired
+          | :replay
+          | :use_dpop_nonce
+
+  @doc """
+  Verify a DPoP proof JWS per RFC 9449 against the given request context.
+
+  ## Required opts
+
+    * `:http_method` - the HTTP method of the request the proof was
+      attached to (`"POST"`, `"GET"`, …). Compared case-sensitively to
+      the proof's `htm` claim per RFC 9449 §4.3.
+    * `:http_uri` - the HTTP target URI of the request, including scheme
+      and host. Query and fragment components are stripped before
+      comparison so a client that signed `https://api.example/x` and the
+      server-observed `https://api.example/x?cb=1` still match.
+
+  ## Optional opts
+
+    * `:access_token` - the bearer/DPoP access token presented on the
+      same request. If supplied, the proof MUST carry an `ath` claim
+      whose value is `base64url(SHA-256(access_token))` per RFC 9449
+      §4.3. If `:access_token` is omitted (e.g. the proof is attached to
+      a token endpoint request, where no access token exists yet), the
+      `ath` claim - if present - is returned but not constrained.
+    * `:now` - `DateTime` or unix-seconds integer used as the clock
+      reference. Defaults to `DateTime.utc_now/0`. Test-facing.
+    * `:max_age_seconds` - how far in the past `iat` may be. Default 60.
+      A constant #{@future_skew_seconds}-second window into the future is
+      also accepted to tolerate modest client-side clock skew.
+    * `:replay_check` - a two-arity function called with the proof's
+      `jti` and the TTL (seconds) the store must remember it for, AFTER
+      every other check has passed. Returns `:ok` if the `jti` has not
+      been seen, or `{:error, :replay}` if it has. Required by
+      protected-resource pipelines; pass
+      `&Attesto.DPoP.ReplayCache.check_and_record/2`. Omit only in test
+      scaffolding.
+    * `:nonce_check` - a one-arity function called with the proof's
+      `nonce` claim (which may be `nil`). Returns `:ok` or
+      `{:error, :use_dpop_nonce}` (RFC 9449 §8), the latter telling the
+      caller to answer with a fresh `DPoP-Nonce`. Omitted, no nonce is
+      required. See `Attesto.DPoP.NonceStore`.
+
+  ## Returns
+
+    * `{:ok, %{jkt: ..., jti: ..., ath: ..., htm: ..., htu: ..., iat: ...}}`
+      on success. `jkt` is the RFC 7638 SHA-256 thumbprint of the proof's
+      embedded JWK; the caller compares it to the access token's
+      `cnf.jkt`.
+    * `{:error, reason}` otherwise. See the module typespecs for the full
+      error set.
+  """
+  @spec verify_proof(String.t(), verify_opts()) ::
+          {:ok, verified_proof()} | {:error, verify_error()}
+  def verify_proof(proof, opts \\ [])
+
+  def verify_proof(proof, opts) when is_binary(proof) and is_list(opts) do
+    with {:ok, header} <- parse_header(proof),
+         :ok <- check_typ(header),
+         :ok <- check_alg(header),
+         :ok <- check_crit(header),
+         {:ok, jwk} <- extract_jwk(header),
+         {:ok, claims} <- verify_signature(proof, header["alg"], jwk),
+         :ok <- check_htm(claims, opts),
+         :ok <- check_htu(claims, opts),
+         {:ok, iat} <- check_iat(claims, opts),
+         {:ok, jti} <- check_jti(claims),
+         {:ok, ath} <- check_ath(claims, opts),
+         :ok <- check_nonce(claims, opts),
+         :ok <- check_replay(jti, opts) do
+      {:ok,
+       %{
+         ath: ath,
+         htm: claims["htm"],
+         htu: claims["htu"],
+         iat: iat,
+         jkt: JOSE.JWK.thumbprint(jwk),
+         jti: jti
+       }}
+    end
+  end
+
+  def verify_proof(_proof, _opts), do: {:error, :invalid_proof}
+
+  @doc """
+  RFC 7638 SHA-256 JWK thumbprint, base64url-encoded without padding.
+  Accepts a `%JOSE.JWK{}` or a JWK as a plain map (e.g. the one in a DPoP
+  proof's protected header).
+  """
+  @spec compute_jkt(JOSE.JWK.t() | map()) :: String.t()
+  def compute_jkt(%JOSE.JWK{} = jwk), do: JOSE.JWK.thumbprint(jwk)
+
+  def compute_jkt(map) when is_map(map) do
+    map
+    |> JOSE.JWK.from_map()
+    |> JOSE.JWK.thumbprint()
+  end
+
+  @doc """
+  The `ath` claim value defined by RFC 9449 §4.3:
+  `base64url(SHA-256(access_token))`, unpadded.
+  """
+  @spec compute_ath(String.t()) :: String.t()
+  def compute_ath(access_token) when is_binary(access_token), do: Thumbprint.of(access_token)
+
+  @doc """
+  Returns `true` iff the given access-token claims map advertises a DPoP
+  binding via RFC 7800 `cnf.jkt`. Tolerates any verifier-accepted
+  `cnf.jkt` value (non-empty string).
+  """
+  @spec dpop_bound?(map()) :: boolean()
+  def dpop_bound?(%{"cnf" => %{"jkt" => jkt}}) when is_binary(jkt) and jkt != "", do: true
+  def dpop_bound?(_claims), do: false
+
+  @doc """
+  The list of JOSE `alg` values accepted on a DPoP proof's protected
+  header.
+  """
+  @spec allowed_algs() :: [String.t()]
+  def allowed_algs, do: @allowed_algs
+
+  # ----- internal: header parsing -----
+
+  # We pull the protected header out of the compact JWS ourselves rather
+  # than letting `JOSE.JWT.verify_strict/3` do it: we need the embedded
+  # `jwk` BEFORE we can verify the signature.
+  defp parse_header(proof) do
+    case String.split(proof, ".") do
+      # Allow an empty signature segment: an `alg=none` "unsecured JWS"
+      # has the literal compact form `<header>.<payload>.`. We parse the
+      # header anyway so `check_alg/1` can reject it explicitly with
+      # `:invalid_alg`, rather than collapsing the alg-confusion variant
+      # into the opaque `:invalid_proof` bucket.
+      [header_b64, _payload_b64, _sig_b64] when header_b64 != "" ->
+        decode_header(header_b64)
+
+      _ ->
+        {:error, :invalid_proof}
+    end
+  end
+
+  defp decode_header(b64) do
+    with {:ok, bytes} <- url_decode(b64),
+         {:ok, map} <- json_decode(bytes),
+         true <- is_map(map) do
+      {:ok, map}
+    else
+      _ -> {:error, :invalid_proof}
+    end
+  end
+
+  defp url_decode(s) do
+    padded =
+      case rem(byte_size(s), 4) do
+        0 -> s
+        n -> s <> String.duplicate("=", 4 - n)
+      end
+
+    case Base.url_decode64(padded) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> :error
+    end
+  end
+
+  defp json_decode(bytes) do
+    {:ok, JSON.decode!(bytes)}
+  rescue
+    _ -> :error
+  end
+
+  defp check_typ(%{"typ" => @proof_typ}), do: :ok
+  defp check_typ(_header), do: {:error, :invalid_typ}
+
+  defp check_alg(%{"alg" => alg}) when is_binary(alg) do
+    if alg in @allowed_algs, do: :ok, else: {:error, :invalid_alg}
+  end
+
+  defp check_alg(_header), do: {:error, :invalid_alg}
+
+  # RFC 7515 §4.1.11: a recipient that does not understand a JWS extension
+  # named in `crit` MUST reject the JWS. A DPoP proof header that demands a
+  # critical extension Attesto does not implement (Attesto implements none)
+  # is rejected before the signature is trusted.
+  defp check_crit(header) do
+    if Map.has_key?(header, "crit"), do: {:error, :unsupported_critical_header}, else: :ok
+  end
+
+  defp extract_jwk(%{"jwk" => jwk} = header) when is_map(jwk) and map_size(jwk) > 0 do
+    # RFC 9449 §4.2: the embedded JWK MUST be a public key for signing.
+    # Reject any header that smuggles private-key material (accepting it
+    # would still verify the signature but would leak the client's private
+    # key into our logs / audit trail), any key whose own metadata
+    # (RFC 7517 §4.2/§4.3 `use` / `key_ops`) marks it as not for signature
+    # verification, and any key whose declared `alg` contradicts the JWS
+    # header `alg`.
+    cond do
+      has_private_jwk_member?(jwk) -> {:error, :invalid_jwk}
+      not usable_for_signing?(jwk) -> {:error, :invalid_jwk}
+      not alg_consistent?(jwk, header) -> {:error, :invalid_jwk}
+      true -> from_public_map(jwk)
+    end
+  end
+
+  defp extract_jwk(_header), do: {:error, :missing_jwk}
+
+  # RFC 7517 §4.4: if the JWK declares `alg`, it constrains the algorithm
+  # the key may be used with, so a JWK `alg` that disagrees with the JWS
+  # header `alg` is contradictory and rejected. An absent JWK `alg` imposes
+  # no constraint.
+  defp alg_consistent?(jwk, header) do
+    case Map.get(jwk, "alg") do
+      nil -> true
+      alg -> alg == Map.get(header, "alg")
+    end
+  end
+
+  defp from_public_map(jwk) do
+    {:ok, JOSE.JWK.from_map(jwk)}
+  rescue
+    _ -> {:error, :invalid_jwk}
+  catch
+    _, _ -> {:error, :invalid_jwk}
+  end
+
+  # Private-key components per RFC 7518 §6.2.2 / §6.3.2. Any of these in a
+  # DPoP header is a protocol violation.
+  @private_jwk_members ~w(d p q dp dq qi oth k)
+  defp has_private_jwk_member?(jwk) do
+    Enum.any?(@private_jwk_members, &Map.has_key?(jwk, &1))
+  end
+
+  # RFC 7517 §4.2/§4.3: if the key declares `use`, it must be "sig"; if it
+  # declares `key_ops`, the list must allow "verify". A key explicitly
+  # marked encryption-only must not be honoured to verify a proof
+  # signature, even though the signature math might otherwise pass.
+  defp usable_for_signing?(jwk) do
+    use_ok? =
+      case Map.get(jwk, "use") do
+        nil -> true
+        "sig" -> true
+        _ -> false
+      end
+
+    ops_ok? =
+      case Map.get(jwk, "key_ops") do
+        nil -> true
+        ops when is_list(ops) -> "verify" in ops
+        _ -> false
+      end
+
+    use_ok? and ops_ok?
+  end
+
+  # ----- internal: signature verification -----
+
+  defp verify_signature(proof, alg, jwk) do
+    case JOSE.JWT.verify_strict(jwk, [alg], proof) do
+      {true, %JOSE.JWT{fields: claims}, %JOSE.JWS{}} when is_map(claims) ->
+        {:ok, claims}
+
+      {false, _jwt, _jws} ->
+        {:error, :invalid_signature}
+
+      _other ->
+        # Same defensive pattern as `Attesto.Token`: JOSE collapses any
+        # internal parser blow-up into a tuple we treat as opaque.
+        {:error, :invalid_proof}
+    end
+  end
+
+  # ----- internal: claim checks -----
+
+  defp check_htm(%{"htm" => htm}, opts) when is_binary(htm) do
+    expected = require_string!(opts, :http_method)
+    if htm == expected, do: :ok, else: {:error, :invalid_htm}
+  end
+
+  defp check_htm(_claims, _opts), do: {:error, :invalid_htm}
+
+  defp check_htu(%{"htu" => htu}, opts) when is_binary(htu) do
+    expected = require_string!(opts, :http_uri)
+
+    cond do
+      # An HTTPS-only rule applies to the URI a DPoP proof is bound to. A
+      # proof signed for `http://…` - or attached to a request whose
+      # observed URI is `http://…` - is a downgrade attempt or a
+      # misconfigured client, and we fail closed rather than verify it.
+      not String.starts_with?(htu, "https://") -> {:error, :invalid_htu}
+      not String.starts_with?(expected, "https://") -> {:error, :invalid_htu}
+      # RFC 9449 §4.3: the client MUST construct `htu` WITHOUT the query and
+      # fragment. A proof whose `htu` carries either is non-conformant, so
+      # we reject it rather than silently stripping the proof side. (The
+      # server-observed `expected` URI may still carry a query/fragment,
+      # which we normalise away below.)
+      htu != normalize_htu(htu) -> {:error, :invalid_htu}
+      normalize_htu(htu) == normalize_htu(expected) -> :ok
+      true -> {:error, :invalid_htu}
+    end
+  end
+
+  defp check_htu(_claims, _opts), do: {:error, :invalid_htu}
+
+  # RFC 9449 §4.3: the `htu` claim is the request URI without query and
+  # fragment. The proof side must already be clean (enforced in
+  # `check_htu/2`); we normalise the server-observed side so a live request
+  # URL carrying a `?cb=1` etc. still matches a clean proof `htu`.
+  defp normalize_htu(uri) do
+    uri
+    |> String.split("#", parts: 2)
+    |> List.first()
+    |> String.split("?", parts: 2)
+    |> List.first()
+  end
+
+  defp check_iat(%{"iat" => iat}, opts) when is_integer(iat) and iat >= 0 do
+    now = unix_now(opts)
+    max_age = Keyword.get(opts, :max_age_seconds, @default_max_age_seconds)
+
+    cond do
+      iat > now + @future_skew_seconds -> {:error, :invalid_iat}
+      iat < now - max_age -> {:error, :proof_expired}
+      true -> {:ok, iat}
+    end
+  end
+
+  defp check_iat(%{"iat" => _}, _opts), do: {:error, :invalid_iat}
+  defp check_iat(_claims, _opts), do: {:error, :missing_iat}
+
+  defp check_jti(%{"jti" => jti}) when is_binary(jti) and jti != "" do
+    if byte_size(jti) > @max_jti_length do
+      {:error, :invalid_jti}
+    else
+      {:ok, jti}
+    end
+  end
+
+  defp check_jti(%{"jti" => _}), do: {:error, :invalid_jti}
+  defp check_jti(_claims), do: {:error, :missing_jti}
+
+  # RFC 9449 §8: a server may require a server-issued nonce in the proof's
+  # `nonce` claim. When the caller supplies a `:nonce_check`, the proof's
+  # `nonce` (which may be nil if the client sent none) is handed to it; a
+  # `{:error, :use_dpop_nonce}` tells the caller to answer with a fresh
+  # nonce (HTTP 401 + `DPoP-Nonce`). With no `:nonce_check`, no nonce is
+  # required. See `Attesto.DPoP.NonceStore`.
+  defp check_nonce(claims, opts) do
+    case Keyword.get(opts, :nonce_check) do
+      nil ->
+        :ok
+
+      fun when is_function(fun, 1) ->
+        case fun.(Map.get(claims, "nonce")) do
+          :ok ->
+            :ok
+
+          {:error, :use_dpop_nonce} ->
+            {:error, :use_dpop_nonce}
+
+          other ->
+            raise ArgumentError,
+                  "Attesto.DPoP.verify_proof/2 :nonce_check must return :ok or " <>
+                    "{:error, :use_dpop_nonce}; got #{inspect(other)}"
+        end
+
+      other ->
+        raise ArgumentError,
+              "Attesto.DPoP.verify_proof/2 :nonce_check must be a 1-arity function or nil; " <>
+                "got #{inspect(other)}"
+    end
+  end
+
+  defp check_replay(jti, opts) do
+    case Keyword.get(opts, :replay_check) do
+      nil ->
+        :ok
+
+      fun when is_function(fun, 2) ->
+        case fun.(jti, replay_ttl(opts)) do
+          :ok ->
+            :ok
+
+          {:error, :replay} ->
+            {:error, :replay}
+
+          other ->
+            raise ArgumentError,
+                  "Attesto.DPoP.verify_proof/2 :replay_check must return :ok or " <>
+                    "{:error, :replay}; got #{inspect(other)}"
+        end
+
+      other ->
+        raise ArgumentError,
+              "Attesto.DPoP.verify_proof/2 :replay_check must be a 2-arity function " <>
+                "(jti, ttl_seconds) or nil; got #{inspect(other)}"
+    end
+  end
+
+  # The replay store MUST remember a `jti` for at least as long as the
+  # proof itself remains acceptable, or a captured proof could be replayed
+  # after the cache forgot it but before its `iat` window closed. The
+  # acceptance window is `max_age_seconds` plus the future-skew allowance,
+  # so the cache TTL is derived from the verifier's own age policy rather
+  # than a fixed default that could diverge from it.
+  defp replay_ttl(opts) do
+    Keyword.get(opts, :max_age_seconds, @default_max_age_seconds) + @future_skew_seconds
+  end
+
+  defp check_ath(claims, opts) do
+    case {Keyword.get(opts, :access_token), Map.get(claims, "ath")} do
+      {nil, ath} when is_binary(ath) or is_nil(ath) ->
+        {:ok, ath}
+
+      {token, ath} when is_binary(token) and is_binary(ath) ->
+        if SecureCompare.equal?(ath, compute_ath(token)),
+          do: {:ok, ath},
+          else: {:error, :invalid_ath}
+
+      {token, _ath} when is_binary(token) ->
+        {:error, :missing_ath}
+
+      {nil, _other} ->
+        {:error, :invalid_ath}
+    end
+  end
+
+  # ----- internal: helpers -----
+
+  defp unix_now(opts) do
+    case Keyword.get(opts, :now) do
+      nil -> DateTime.utc_now() |> DateTime.to_unix(:second)
+      n when is_integer(n) -> n
+      %DateTime{} = dt -> DateTime.to_unix(dt, :second)
+    end
+  end
+
+  defp require_string!(opts, key) do
+    case Keyword.get(opts, key) do
+      v when is_binary(v) and v != "" ->
+        v
+
+      other ->
+        raise ArgumentError,
+              "Attesto.DPoP.verify_proof/2 requires opt #{inspect(key)} as a non-empty " <>
+                "string; got #{inspect(other)}"
+    end
+  end
+end
