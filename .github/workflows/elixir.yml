@@ -113,4 +113,8 @@ jobs:
 
       - name: Run Dialyzer
         if: ${{ matrix.lint }}
+        # dialyxir is `only: [:dev]`, and dev excludes the test-only
+        # erlang_python dep and test/support, so dialyzer analyses lib/ alone.
+        env:
+          MIX_ENV: dev
         run: mix dialyzer

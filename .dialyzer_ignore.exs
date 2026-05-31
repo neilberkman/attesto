@@ -13,6 +13,9 @@
 #     key-trial loop.
 #   * Attesto.Token.peek_protected_header/1 - rejects a non-binary
 #     peek_protected result / decode rather than raising.
+#   * Attesto.IDToken.{verify_strict_against,verify_against_any,
+#     peek_protected_header} - the ID Token verifier shares the same
+#     fail-closed JOSE verify-boundary clauses as Attesto.Token.
 #   * Attesto.Scope.parse_resource_wildcard/2 - rejects a non-binary scope
 #     rather than raising, even though callers guard is_binary upstream.
 #
@@ -23,5 +26,7 @@
 [
   {"lib/attesto/token.ex", :pattern_match},
   {"lib/attesto/token.ex", :pattern_match_cov},
+  {"lib/attesto/id_token.ex", :pattern_match},
+  {"lib/attesto/id_token.ex", :pattern_match_cov},
   {"lib/attesto/scope.ex", :pattern_match_cov}
 ]
