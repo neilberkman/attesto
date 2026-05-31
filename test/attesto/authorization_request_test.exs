@@ -171,12 +171,22 @@ defmodule Attesto.AuthorizationRequestTest do
       assert err.state == "xyz"
     end
 
-    test "request object is explicitly rejected when unsupported" do
+    test "request object is rejected when no trusted client keys are supplied" do
       assert {:error, {:redirect, err}} = validate(base_params(%{"request" => "header.body.sig"}))
 
-      assert err.error == "request_not_supported"
+      assert err.error == "invalid_request_object"
       assert err.redirect_uri == @redirect_uri
       assert err.state == "xyz"
+    end
+
+    test "invalid request object with an untrusted redirect_uri does not redirect" do
+      params =
+        base_params(%{
+          "request" => "header.body.sig",
+          "redirect_uri" => "https://attacker.example/cb"
+        })
+
+      assert {:error, {:direct, :redirect_uri_not_registered}} = validate(params)
     end
 
     test "an out-of-ABNF scope token redirects with invalid_scope" do

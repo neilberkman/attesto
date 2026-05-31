@@ -56,6 +56,7 @@ defmodule Attesto.Token do
   alias Attesto.Key
   alias Attesto.PrincipalKind
   alias Attesto.Scope
+  alias Attesto.SigningAlg
   alias Attesto.Thumbprint
 
   @signing_alg "RS256"
@@ -308,7 +309,7 @@ defmodule Attesto.Token do
 
   def peek_signed_claims(%Config{}, _), do: {:error, :invalid_token}
 
-  @doc "The JWS algorithm used to sign tokens. Pinned; verifiers reject anything else."
+  @doc "The default JWS algorithm for RSA keys. Keystores may label individual keys with another supported alg."
   @spec signing_alg() :: String.t()
   def signing_alg, do: @signing_alg
 
@@ -424,8 +425,9 @@ defmodule Attesto.Token do
   defp sign(config, claims) do
     pem = config.keystore.signing_pem()
     jwk = Key.signing_jwk(pem)
+    alg = SigningAlg.for_key(config.keystore, pem, signing?: true)
     payload = JSON.encode!(claims)
-    signed = JOSE.JWS.sign(jwk, payload, jose_header(config, pem, claims))
+    signed = JOSE.JWS.sign(jwk, payload, jose_header(config, pem, claims, alg))
     {_protected_header, compact} = JOSE.JWS.compact(signed)
     compact
   end
@@ -436,8 +438,8 @@ defmodule Attesto.Token do
   # tokens when `config.access_token_header_typ` is set (the default);
   # a host that needs a different/legacy header sets it to a custom value
   # or `nil`.
-  defp jose_header(config, pem, claims) do
-    base = %{"alg" => @signing_alg, "kid" => Key.kid(pem)}
+  defp jose_header(config, pem, claims, alg) do
+    base = %{"alg" => alg, "kid" => Key.kid(pem)}
 
     case {config.access_token_header_typ, Map.get(claims, "typ")} do
       {typ, @typ_access} when is_binary(typ) -> Map.put(base, "typ", typ)
@@ -512,24 +514,25 @@ defmodule Attesto.Token do
     if Map.has_key?(header, "crit"), do: {:error, :unsupported_critical_header}, else: :ok
   end
 
-  # Build the {kid, jwk} set the keystore trusts, then narrow by the JWS
+  # Build the {kid, alg, jwk} set the keystore trusts, then narrow by the JWS
   # header `kid`. A header `kid` naming a key we do not hold yields `[]`
   # (-> `:invalid_signature`) before any signature math. A token with no
   # `kid` header (a hand-forged token) is tried against every trusted key,
   # which is safe - they are all ours.
   defp candidate_jwks(config, header_kid) do
     config.keystore.verification_pems()
-    |> Enum.map(fn pem -> {Key.kid(pem), Key.jwk(pem)} end)
+    |> Enum.map(fn pem ->
+      {Key.kid(pem), SigningAlg.for_key(config.keystore, pem), Key.jwk(pem)}
+    end)
     |> filter_by_kid(header_kid)
-    |> Enum.map(&elem(&1, 1))
   end
 
   defp filter_by_kid(keyed, nil), do: keyed
-  defp filter_by_kid(keyed, kid), do: Enum.filter(keyed, fn {k, _} -> k == kid end)
+  defp filter_by_kid(keyed, kid), do: Enum.filter(keyed, fn {k, _alg, _jwk} -> k == kid end)
 
-  defp verify_against_any(jwks, jwt) do
-    Enum.reduce_while(jwks, {:error, :invalid_signature}, fn jwk, acc ->
-      case verify_strict_against(jwk, jwt) do
+  defp verify_against_any(candidates, jwt) do
+    Enum.reduce_while(candidates, {:error, :invalid_signature}, fn {_kid, alg, jwk}, acc ->
+      case verify_strict_against(jwk, alg, jwt) do
         {:ok, _claims} = ok -> {:halt, ok}
         # A structural parse failure is terminal regardless of key.
         {:error, :invalid_token} = err -> {:halt, err}
@@ -538,8 +541,8 @@ defmodule Attesto.Token do
     end)
   end
 
-  defp verify_strict_against(jwk, jwt) do
-    case JOSE.JWT.verify_strict(jwk, [@signing_alg], jwt) do
+  defp verify_strict_against(jwk, alg, jwt) do
+    case JOSE.JWT.verify_strict(jwk, [alg], jwt) do
       {true, %JOSE.JWT{fields: claims}, %JOSE.JWS{}} ->
         {:ok, claims}
 

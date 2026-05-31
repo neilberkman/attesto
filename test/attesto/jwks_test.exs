@@ -44,17 +44,19 @@ defmodule Attesto.JWKSTest do
       assert %{"keys" => []} = JWKS.from_pems([])
     end
 
-    test "an EC key is rejected, not published mislabelled as RS256" do
-      # attesto is RS256-only. Without the RSA guard in Key.jwk/1, an EC key
-      # would be emitted as `kty: "EC"` carrying `alg: "RS256"` - a corrupt,
-      # self-contradictory JWK entry. It must fail loudly instead.
+    test "an EC P-256 key is published as ES256, not mislabelled as RS256" do
       ec_pem =
         {:ec, "P-256"}
         |> JOSE.JWK.generate_key()
         |> JOSE.JWK.to_pem()
         |> elem(1)
 
-      assert_raise ArgumentError, ~r/RSA key.*RS256.*EC/, fn -> JWKS.from_pems([ec_pem]) end
+      assert %{"keys" => [jwk]} = JWKS.from_pems([ec_pem])
+      assert jwk["kty"] == "EC"
+      assert jwk["crv"] == "P-256"
+      assert jwk["alg"] == "ES256"
+      assert jwk["kid"] == Key.kid(ec_pem)
+      refute Map.has_key?(jwk, "d")
     end
   end
 

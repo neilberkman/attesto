@@ -47,6 +47,7 @@ defmodule Attesto.AuthorizationRequest do
   """
 
   alias Attesto.PKCE
+  alias Attesto.RequestObject
   alias Attesto.Scope
 
   @response_type_code "code"
@@ -173,11 +174,49 @@ defmodule Attesto.AuthorizationRequest do
     require_nonce = Keyword.get(opts, :require_nonce, @default_require_nonce)
     require_pkce = Keyword.get(opts, :require_pkce, @default_require_pkce)
 
-    with {:ok, client_id} <- validate_client_id(params),
+    with {:ok, params} <- merge_request_object(params, opts),
+         {:ok, client_id} <- validate_client_id(params),
          {:ok, redirect_uri} <- validate_redirect_uri(params, registered) do
       # From here on, redirect_uri is trusted: report further errors by
       # redirecting to it (RFC 6749 §4.1.2.1).
       validate_redirectable(params, client_id, redirect_uri, require_nonce, require_pkce)
+    end
+  end
+
+  defp merge_request_object(%{"request" => request} = params, opts) when is_binary(request) and request != "" do
+    with {:ok, jwks} <- fetch_request_object_jwks(opts),
+         {:ok, object_params} <-
+           RequestObject.verify(request, jwks,
+             issuer: Map.get(params, "client_id"),
+             audience: Keyword.get(opts, :request_object_audience)
+           ) do
+      {:ok, Map.merge(params, object_params)}
+    else
+      _ ->
+        case validate_redirect_uri(params, Keyword.fetch!(opts, :registered_redirect_uris)) do
+          {:ok, redirect_uri} ->
+            state = string_or_nil(Map.get(params, "state"))
+
+            {:error,
+             redirect_error(
+               "invalid_request_object",
+               "request object is invalid",
+               redirect_uri,
+               state
+             )}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp merge_request_object(params, _opts), do: {:ok, params}
+
+  defp fetch_request_object_jwks(opts) do
+    case Keyword.get(opts, :request_object_jwks) do
+      nil -> {:error, :missing_request_object_jwks}
+      jwks -> {:ok, jwks}
     end
   end
 
@@ -251,32 +290,21 @@ defmodule Attesto.AuthorizationRequest do
     end
   end
 
-  # OpenID Connect Core §6 / §3.1.2.6: this implementation advertises both
-  # `request_parameter_supported: false` and `request_uri_parameter_supported:
-  # false`. If either parameter is supplied, reject it explicitly rather than
-  # ignoring it and issuing a code from the outer parameters.
+  # OpenID Connect Core §6 / §3.1.2.6: request objects are verified and merged
+  # before this point when the caller supplies `:request_object_jwks`. A raw
+  # `request_uri` is still rejected here unless the transport layer has already
+  # resolved it (PAR) into normal params.
   defp validate_request_object_params(params, redirect_uri, state) do
-    cond do
-      present?(Map.get(params, "request_uri")) ->
-        {:error,
-         redirect_error(
-           "request_uri_not_supported",
-           "request_uri parameter is not supported",
-           redirect_uri,
-           state
-         )}
-
-      present?(Map.get(params, "request")) ->
-        {:error,
-         redirect_error(
-           "request_not_supported",
-           "request parameter is not supported",
-           redirect_uri,
-           state
-         )}
-
-      true ->
-        :ok
+    if present?(Map.get(params, "request_uri")) do
+      {:error,
+       redirect_error(
+         "request_uri_not_supported",
+         "request_uri parameter is not supported",
+         redirect_uri,
+         state
+       )}
+    else
+      :ok
     end
   end
 

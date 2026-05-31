@@ -79,10 +79,7 @@ defmodule Attesto.TokenAtJwtTest do
   end
 
   describe "non-RSA signing key" do
-    test "minting with an EC signing key fails with a clear ArgumentError, not a JOSE crash" do
-      # attesto signs RS256 only. An EC signing key is a deploy-time
-      # misconfiguration; it must surface as a legible ArgumentError naming
-      # the wrong key type rather than an opaque crash deep inside JOSE.
+    test "minting with an EC P-256 signing key uses ES256 and verifies" do
       ec_pem =
         {:ec, "P-256"}
         |> JOSE.JWK.generate_key()
@@ -91,9 +88,13 @@ defmodule Attesto.TokenAtJwtTest do
 
       config = Factory.config(ec_pem)
 
-      assert_raise ArgumentError, ~r/RSA private signing key.*RS256.*ECPrivateKey/, fn ->
-        Token.mint(config, client_principal())
-      end
+      assert {:ok, %{access_token: jwt}} = Token.mint(config, client_principal())
+
+      header = protected_header(jwt)
+      assert header["alg"] == "ES256"
+      assert header["kid"] == Attesto.Key.kid(ec_pem)
+      assert {:ok, claims} = Token.verify(config, jwt)
+      assert claims["sub"] == "oc_abc123"
     end
   end
 

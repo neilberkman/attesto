@@ -1,6 +1,6 @@
 defmodule Attesto.Key do
   @moduledoc """
-  Pure helpers for working with the RSA signing material as PEM strings.
+  Pure helpers for working with signing material as PEM strings.
 
   An RSA private key already contains its public half, so there is never
   a separately stored public PEM to drift out of sync. `public_pem/1`
@@ -23,8 +23,8 @@ defmodule Attesto.Key do
   Raises `ArgumentError` - signing material is operator-provided, so a
   misconfiguration is a deploy-time failure that should be loud rather
   than silently verifying against garbage - if `pem` contains no key
-  entry, contains more than one, or contains a non-RSA key (attesto signs
-  RS256; an EC or public-only key cannot be a signing key).
+  entry, contains more than one, contains a non-RSA key, or is
+  public-only. EC/OKP deployments should publish JWKS instead.
   """
   @spec public_pem(String.t()) :: String.t()
   def public_pem(pem) when is_binary(pem) do
@@ -58,19 +58,15 @@ defmodule Attesto.Key do
   malformed keystore PEM as a configuration error instead of a
   request-time mystery.
 
-  Also raises if the key is not RSA. Attesto signs and verifies RS256
-  exclusively, so an EC (or any non-RSA) key has no valid role as a
-  signing or verification key. Rejecting it here prevents two failure
-  modes: a JWKS that advertises an EC key mislabelled `alg: "RS256"`
-  (`Attesto.JWKS`), and an EC signing key that would otherwise crash deep
-  inside JOSE at mint time instead of failing as a clear configuration
-  error.
+  Also raises if the key type/curve is not supported by Attesto's
+  asymmetric signing algorithms. Algorithms are derived from trusted key
+  metadata, not from a presented token header.
   """
   @spec jwk(String.t()) :: JOSE.JWK.t()
   def jwk(pem) when is_binary(pem) do
     case safe_from_pem(pem) do
       %JOSE.JWK{} = jwk ->
-        ensure_rsa!(jwk)
+        ensure_supported!(jwk)
 
       _other ->
         raise ArgumentError,
@@ -79,22 +75,9 @@ defmodule Attesto.Key do
     end
   end
 
-  # Attesto is RS256-only: every signing and verification key must be RSA.
-  # The `kty` is read from the JWK's own JSON map (RFC 7517), the same
-  # canonical source `JOSE.JWK.to_public_map/1` and the thumbprint use.
-  defp ensure_rsa!(%JOSE.JWK{} = jwk) do
+  defp ensure_supported!(%JOSE.JWK{} = jwk) do
+    Attesto.SigningAlg.infer(jwk)
     jwk
-    |> JOSE.JWK.to_map()
-    |> elem(1)
-    |> case do
-      %{"kty" => "RSA"} ->
-        jwk
-
-      %{"kty" => kty} ->
-        raise ArgumentError,
-              "expected an RSA key (attesto signs and verifies RS256 only); got a " <>
-                "#{inspect(kty)} key"
-    end
   end
 
   # `JOSE.JWK.from_pem/1` returns `[]` for an empty/no-entry PEM and, for a
@@ -113,16 +96,19 @@ defmodule Attesto.Key do
   Parse a private PEM into a `JOSE.JWK` whose public half can sign and
   derive a `kid`.
 
-  Unlike `jwk/1`, this rejects public-only RSA PEMs: they are valid
-  verification material, but cannot sign RS256 tokens.
+  Unlike `jwk/1`, this rejects public-only PEMs: they are valid
+  verification material, but cannot sign tokens.
   """
   @spec signing_jwk(String.t()) :: JOSE.JWK.t()
   def signing_jwk(pem) when is_binary(pem) do
-    pem
-    |> decode_rsa_private_key!()
-    |> rsa_public_from_private()
+    jwk = jwk(pem)
 
-    jwk(pem)
+    if private_jwk?(jwk) do
+      jwk
+    else
+      raise ArgumentError,
+            "expected a private signing key PEM; got public verification material"
+    end
   end
 
   # Decode the private key PEM to a key record. Accepts the PKCS#1
@@ -150,14 +136,20 @@ defmodule Attesto.Key do
     {:RSAPublicKey, modulus, public_exponent}
   end
 
-  # Attesto signs RS256, so the signing key must be RSA. A structurally
-  # valid but non-RSA key (e.g. an EC private key, or a public-only PEM)
-  # is a deploy-time misconfiguration: fail with a clear message rather
-  # than an opaque FunctionClauseError.
+  # public_pem/1 is a legacy RSA helper; EC/OKP deployments should publish
+  # JWK Sets rather than derive an SPKI PEM through this path.
   defp rsa_public_from_private(other) do
     raise ArgumentError,
-          "expected an RSA private signing key (attesto signs RS256); got a " <>
+          "expected an RSA private key for public_pem/1; got a " <>
             "#{inspect(elem(other, 0))} key"
+  end
+
+  defp private_jwk?(%JOSE.JWK{} = jwk) do
+    jwk
+    |> JOSE.JWK.to_map()
+    |> elem(1)
+    |> Map.get("d")
+    |> is_binary()
   end
 
   defp encode_spki_pem(public_key) do

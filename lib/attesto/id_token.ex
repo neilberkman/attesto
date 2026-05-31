@@ -67,6 +67,7 @@ defmodule Attesto.IDToken do
 
   alias Attesto.Config
   alias Attesto.Key
+  alias Attesto.SigningAlg
 
   @signing_alg "RS256"
 
@@ -75,11 +76,6 @@ defmodule Attesto.IDToken do
   # JWT; pinning `JWT` here lets a verifier reject an access token presented
   # where an ID Token is expected (and vice versa) on `typ`.
   @header_typ "JWT"
-
-  # RS256 signs with SHA-256, so the hash claims use SHA-256 and the
-  # left-most 128 bits / 16 bytes (OIDC Core §3.1.3.6).
-  @hash_alg :sha256
-  @hash_half_bytes 16
 
   # 1 hour. ID Token lifetime is a host policy; this is a sane default and
   # may only be shortened, mirroring `Attesto.Token`'s lifetime cap.
@@ -174,6 +170,7 @@ defmodule Attesto.IDToken do
          {:ok, extra} <- normalize_extra_claims(opts) do
       iat = unix_now(opts)
       lifetime = lifetime_seconds(opts)
+      alg = signing_alg(config)
 
       claims =
         %{
@@ -188,11 +185,11 @@ defmodule Attesto.IDToken do
         |> put_optional("auth_time", Keyword.get(opts, :auth_time))
         |> put_optional("acr", Keyword.get(opts, :acr))
         |> put_optional("amr", Keyword.get(opts, :amr))
-        |> put_optional("at_hash", hash_claim(Keyword.get(opts, :access_token)))
-        |> put_optional("c_hash", hash_claim(Keyword.get(opts, :code)))
+        |> put_optional("at_hash", hash_claim(Keyword.get(opts, :access_token), alg))
+        |> put_optional("c_hash", hash_claim(Keyword.get(opts, :code), alg))
         |> Map.merge(extra)
 
-      {:ok, sign(config, claims)}
+      {:ok, sign(config, claims, alg)}
     end
   end
 
@@ -255,7 +252,7 @@ defmodule Attesto.IDToken do
 
   def verify(%Config{}, _id_token, _opts), do: {:error, :invalid_token}
 
-  @doc "The JWS algorithm used to sign ID Tokens. Pinned; verifiers reject anything else."
+  @doc "The default JWS algorithm for RSA keys. Keystores may label individual keys with another supported alg."
   @spec signing_alg() :: String.t()
   def signing_alg, do: @signing_alg
 
@@ -270,12 +267,13 @@ defmodule Attesto.IDToken do
 
   # OIDC Core §3.1.3.6: left-most half of the hash of the ASCII octets of
   # the value, base64url-encoded without padding. nil means "not requested".
-  defp hash_claim(nil), do: nil
+  defp hash_claim(nil, _alg), do: nil
 
-  defp hash_claim(value) when is_binary(value) do
-    @hash_alg
+  defp hash_claim(value, alg) when is_binary(value) do
+    alg
+    |> SigningAlg.hash_alg()
     |> :crypto.hash(value)
-    |> binary_part(0, @hash_half_bytes)
+    |> binary_part(0, SigningAlg.hash_half_bytes(alg))
     |> Base.url_encode64(padding: false)
   end
 
@@ -300,17 +298,22 @@ defmodule Attesto.IDToken do
   # `typ: "JWT"` only when the header omits it): emit the protected header
   # `jose_header/1` computes verbatim, exactly as `Attesto.Token` does, so
   # the `typ` is the deliberate `JWT` and the `kid`/`alg` are pinned.
-  defp sign(config, claims) do
+  defp sign(config, claims, alg) do
     pem = config.keystore.signing_pem()
     jwk = Key.signing_jwk(pem)
     payload = JSON.encode!(claims)
-    signed = JOSE.JWS.sign(jwk, payload, jose_header(pem))
+    signed = JOSE.JWS.sign(jwk, payload, jose_header(pem, alg))
     {_protected_header, compact} = JOSE.JWS.compact(signed)
     compact
   end
 
-  defp jose_header(pem) do
-    %{"alg" => @signing_alg, "kid" => Key.kid(pem), "typ" => @header_typ}
+  defp signing_alg(config) do
+    pem = config.keystore.signing_pem()
+    SigningAlg.for_key(config.keystore, pem, signing?: true)
+  end
+
+  defp jose_header(pem, alg) do
+    %{"alg" => alg, "kid" => Key.kid(pem), "typ" => @header_typ}
   end
 
   # `:lifetime` may only shorten the default - a larger value (or a
@@ -379,17 +382,18 @@ defmodule Attesto.IDToken do
 
   defp candidate_jwks(config, header_kid) do
     config.keystore.verification_pems()
-    |> Enum.map(fn pem -> {Key.kid(pem), Key.jwk(pem)} end)
+    |> Enum.map(fn pem ->
+      {Key.kid(pem), SigningAlg.for_key(config.keystore, pem), Key.jwk(pem)}
+    end)
     |> filter_by_kid(header_kid)
-    |> Enum.map(&elem(&1, 1))
   end
 
   defp filter_by_kid(keyed, nil), do: keyed
-  defp filter_by_kid(keyed, kid), do: Enum.filter(keyed, fn {k, _} -> k == kid end)
+  defp filter_by_kid(keyed, kid), do: Enum.filter(keyed, fn {k, _alg, _jwk} -> k == kid end)
 
-  defp verify_against_any(jwks, jwt) do
-    Enum.reduce_while(jwks, {:error, :invalid_signature}, fn jwk, acc ->
-      case verify_strict_against(jwk, jwt) do
+  defp verify_against_any(candidates, jwt) do
+    Enum.reduce_while(candidates, {:error, :invalid_signature}, fn {_kid, alg, jwk}, acc ->
+      case verify_strict_against(jwk, alg, jwt) do
         {:ok, _claims} = ok -> {:halt, ok}
         {:error, :invalid_token} = err -> {:halt, err}
         {:error, :invalid_signature} -> {:cont, acc}
@@ -397,8 +401,8 @@ defmodule Attesto.IDToken do
     end)
   end
 
-  defp verify_strict_against(jwk, jwt) do
-    case JOSE.JWT.verify_strict(jwk, [@signing_alg], jwt) do
+  defp verify_strict_against(jwk, alg, jwt) do
+    case JOSE.JWT.verify_strict(jwk, [alg], jwt) do
       {true, %JOSE.JWT{fields: claims}, %JOSE.JWS{}} ->
         {:ok, claims}
 

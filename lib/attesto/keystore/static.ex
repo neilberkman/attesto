@@ -7,7 +7,10 @@ defmodule Attesto.Keystore.Static do
       config :attesto, Attesto.Keystore.Static,
         signing_pem: System.fetch_env!("OAUTH_SIGNING_PRIVATE_KEY_PEM"),
         # optional; defaults to [signing_pem] when omitted
-        verification_pems: [current_pem, previous_pem]
+        verification_pems: [current_pem, previous_pem],
+        # optional; RSA defaults to RS256, EC/OKP infer from curve
+        signing_alg: "PS256",
+        key_algs: %{current_kid => "PS256", previous_kid => "RS256"}
 
   Only `signing_pem` is required. When `verification_pems` is omitted, the
   verification set is exactly the signing key, which is the correct
@@ -78,6 +81,29 @@ defmodule Attesto.Keystore.Static do
         #{inspect(__MODULE__)} :verification_pems must be a list of PEM strings \
         (or omitted to default to the signing key); got #{inspect(other)}.
         """
+    end
+  end
+
+  @impl true
+  def signing_alg do
+    case fetch(:signing_alg) do
+      nil -> Attesto.SigningAlg.infer(Attesto.Key.signing_jwk(signing_pem()))
+      alg when is_binary(alg) -> Attesto.SigningAlg.validate!(alg)
+      other -> raise ArgumentError, "#{inspect(__MODULE__)} :signing_alg must be a string; got #{inspect(other)}."
+    end
+  end
+
+  @impl true
+  def key_algs do
+    case fetch(:key_algs) do
+      nil ->
+        %{}
+
+      algs when is_map(algs) or is_list(algs) ->
+        Map.new(algs)
+
+      other ->
+        raise ArgumentError, "#{inspect(__MODULE__)} :key_algs must be a map or keyword/list; got #{inspect(other)}."
     end
   end
 

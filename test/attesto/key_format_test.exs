@@ -142,24 +142,16 @@ defmodule Attesto.KeyFormatTest do
   describe "EC P-256 private PEM" do
     setup do: {:ok, pem: ec_p256_private_pem()}
 
-    test "public_pem/1 raises a clear ArgumentError on an EC key (attesto signs RS256)",
+    test "public_pem/1 raises a clear ArgumentError on an EC key",
          %{pem: pem} do
-      # An EC private key is structurally valid but not RSA. public_pem/1
-      # fails with a clear ArgumentError naming the wrong key type, so an
-      # ES256 misconfiguration is legible rather than an opaque crash.
-      assert_raise ArgumentError, ~r/RSA private signing key/, fn -> Key.public_pem(pem) end
+      # EC keys are valid signing/JWKS material, but public_pem/1 is the
+      # legacy RSA SPKI-derivation helper.
+      assert_raise ArgumentError, ~r/RSA private key for public_pem/, fn -> Key.public_pem(pem) end
     end
 
-    test "jwk/1 and kid/1 reject an EC key (attesto is RS256-only)", %{pem: pem} do
-      # JOSE parses EC fine, but attesto signs and verifies RS256
-      # exclusively, so an EC key has no valid role as a signing or
-      # verification key. jwk/1 rejects it with a clear ArgumentError
-      # naming the wrong key type - this is what stops an EC key from being
-      # published in a JWKS mislabelled `alg: "RS256"`, or used as a signing
-      # key that would crash deep inside JOSE at mint time. kid/1 goes
-      # through jwk/1, so it rejects too.
-      assert_raise ArgumentError, ~r/RSA key.*RS256.*EC/, fn -> Key.jwk(pem) end
-      assert_raise ArgumentError, ~r/RSA key.*RS256.*EC/, fn -> Key.kid(pem) end
+    test "jwk/1 and kid/1 accept an EC key for ES256 signing/JWKS", %{pem: pem} do
+      assert %JOSE.JWK{} = Key.jwk(pem)
+      assert String.length(Key.kid(pem)) == 43
     end
   end
 
@@ -171,7 +163,7 @@ defmodule Attesto.KeyFormatTest do
       # :RSAPublicKey record is not an RSA private signing key, so it now
       # fails with a clear ArgumentError rather than a FunctionClauseError.
       assert String.starts_with?(pem, "-----BEGIN PUBLIC KEY-----")
-      assert_raise ArgumentError, ~r/RSA private signing key/, fn -> Key.public_pem(pem) end
+      assert_raise ArgumentError, ~r/RSA private key for public_pem/, fn -> Key.public_pem(pem) end
     end
 
     test "kid/1 and jwk/1 work on a public-only PEM (this is the verification path)",
@@ -183,7 +175,7 @@ defmodule Attesto.KeyFormatTest do
     end
 
     test "signing_jwk/1 rejects a public-only PEM before JOSE signing crashes", %{pem: pem} do
-      assert_raise ArgumentError, ~r/RSA private signing key/, fn ->
+      assert_raise ArgumentError, ~r/private signing key PEM/, fn ->
         Key.signing_jwk(pem)
       end
     end

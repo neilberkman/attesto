@@ -29,9 +29,8 @@ defmodule Attesto.OpenIDDiscovery do
     * `issuer`, `token_endpoint`, and `jwks_uri` via `Attesto.Discovery`.
     * `subject_types_supported` is `["public"]` - Attesto does not mint
       pairwise subject identifiers.
-    * `id_token_signing_alg_values_supported` is `["RS256"]` - the
-      OIDC-required default signing algorithm
-      (OpenID Connect Discovery §3, OpenID Connect Core §15.1).
+    * `id_token_signing_alg_values_supported` defaults to the algorithms
+      of the configured verification keys (RSA defaults to RS256).
     * `claim_types_supported` is `["normal"]` - Attesto returns claims
       directly, not aggregated or distributed
       (OpenID Connect Core §5.6).
@@ -57,6 +56,7 @@ defmodule Attesto.OpenIDDiscovery do
 
   alias Attesto.Config
   alias Attesto.Discovery
+  alias Attesto.SigningAlg
 
   @default_response_types ["code"]
   @subject_types ["public"]
@@ -122,10 +122,12 @@ defmodule Attesto.OpenIDDiscovery do
 
     base = Discovery.metadata(config, oauth_opts)
 
+    algs = Keyword.get(opts, :id_token_signing_alg_values_supported, signing_algs(config))
+
     oidc_base =
       base
       |> Map.put("subject_types_supported", @subject_types)
-      |> Map.put("id_token_signing_alg_values_supported", @id_token_signing_alg_values)
+      |> Map.put("id_token_signing_alg_values_supported", algs)
       |> Map.put("claim_types_supported", @claim_types)
       |> Map.put(
         "request_parameter_supported",
@@ -157,5 +159,21 @@ defmodule Attesto.OpenIDDiscovery do
           Keyword.put(opts, :scopes_supported, ["openid" | scopes])
         end
     end
+  end
+
+  defp signing_algs(%Config{keystore: keystore}) do
+    if function_exported?(keystore, :verification_pems, 0) do
+      keystore.verification_pems()
+      |> Enum.map(&SigningAlg.for_key(keystore, &1))
+      |> Enum.uniq()
+      |> case do
+        [] -> @id_token_signing_alg_values
+        algs -> algs
+      end
+    else
+      @id_token_signing_alg_values
+    end
+  rescue
+    _ -> @id_token_signing_alg_values
   end
 end
