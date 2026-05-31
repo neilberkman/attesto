@@ -62,9 +62,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   token is a redirectable `invalid_request` error (OIDC Core §3.1.2.1). The
   parsed list is still exposed for the controller, which enforces semantics such
   as `prompt=none` (the OP MUST NOT show UI).
-- `Attesto.RefreshStore.consume/2` receives the claim timestamp and returns
-  consumed records with enough metadata for retry/reuse decisions. This is the
-  intentional 0.6 store-contract change.
+- `c:Attesto.RefreshStore.consume/2` receives rotation options such as the
+  claim timestamp and returns consumed records with enough metadata for
+  retry/reuse decisions. This is the intentional 0.6 store-contract change.
 
 ### Security
 
