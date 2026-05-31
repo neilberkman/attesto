@@ -39,6 +39,21 @@ jobs:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
+      # The cross-language parity tests (@moduletag :parity) drive a real
+      # reference Python stack (joserfc + cryptography) IN-PROCESS through
+      # erlang_python's :py NIF. That NIF embeds a CPython interpreter, and
+      # the bridge starts it in :owngil mode, which the dep only enables on
+      # Python >= 3.14 - so the interpreter the NIF links must be 3.14 and
+      # must have joserfc + cryptography importable. We pin 3.14 here, install
+      # the packages into it, and rebuild erlang_python against it below.
+      - name: Set up Python 3.14 (in-process parity stack)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Python parity dependencies
+        run: python -m pip install --upgrade pip joserfc cryptography
+
       - name: Restore dependencies cache
         uses: actions/cache@v4
         with:
@@ -60,6 +75,18 @@ jobs:
           mix local.hex --force
           mix local.rebar --force
           mix deps.get
+
+      # Force erlang_python to (re)build its NIF against the Python 3.14 set
+      # up above. PYTHON_CONFIG is the documented hint its CMake honours
+      # (it derives Python3_ROOT_DIR from `--prefix`). We wipe any cached
+      # CMake configure first so a restored deps cache can't pin a stale
+      # interpreter, and --force recompiles even on a build-cache hit.
+      - name: Build erlang_python against Python 3.14
+        env:
+          PYTHON_CONFIG: ${{ env.pythonLocation }}/bin/python3.14-config
+        run: |
+          rm -rf deps/erlang_python/_build/cmake deps/erlang_python/priv/*.so
+          mix deps.compile erlang_python --force
 
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
