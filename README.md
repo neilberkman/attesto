@@ -7,26 +7,33 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/neilberkman/attesto/blob/main/LICENSE)
 [![Elixir](https://img.shields.io/badge/elixir-%E2%89%A5%201.18-purple)](https://elixir-lang.org)
 
-A vendor-neutral [OAuth 2.0](https://oauth.net/2/) / [OpenID Connect](https://openid.net/developers/how-connect-works/) engine for Elixir, with first-class support for sender-constrained access tokens: [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) and mutual TLS.
+A vendor-neutral [OAuth 2.0](https://oauth.net/2/) / [OpenID Connect](https://openid.net/developers/how-connect-works/) engine for Elixir APIs that need modern token security, with first-class support for sender-constrained access tokens: [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) and mutual TLS.
 
 ## Where it fits
 
 Most Elixir authentication libraries focus on the application session: signing
 in with an external provider, managing user accounts, or creating Phoenix
-session cookies. Attesto sits on the token side of the boundary.
+session cookies. Attesto sits on the token side of the boundary: short-lived,
+scoped, locally-verifiable OAuth/OIDC tokens for APIs and machine clients.
+That matters for everyday APIs as much as specialized high-assurance systems:
+as exploit discovery gets cheaper and faster, stolen bearer tokens and
+long-lived credentials become weaker defaults.
 
 Use it when you need to:
 
 1. Verify standards-based API tokens in a resource server. Attesto verifies
    JWT access tokens locally by signature, audience, issuer, and optional
-   sender constraint. No token database or introspection call is required for
-   the normal access-token path.
+   sender constraint. A stolen sender-constrained token is not enough to call
+   the API without the holder's DPoP key or client certificate, and no token
+   database or introspection call is required for the normal access-token path.
 
 2. Issue tokens from your own authorization server. Attesto provides the
    protocol pieces: JWT access tokens, ID tokens, JWKS/key handling, DPoP,
    mutual-TLS binding, authorization-code helpers, refresh-token rotation,
-   scope algebra, and OAuth error/challenge helpers. Transport and persistence
-   remain separate; `attesto_phoenix` supplies the Phoenix/Ecto layer.
+   scope algebra, and OAuth error/challenge helpers. Machine-to-machine access
+   can use OAuth client credentials with short-lived scoped tokens instead of
+   long-lived API keys. Transport and persistence remain separate;
+   `attesto_phoenix` supplies the Phoenix/Ecto layer.
 
 This is different from session-oriented libraries such as Ueberauth, Assent,
 Pow, AshAuthentication, or `mix phx.gen.auth`: those help your application
@@ -64,7 +71,8 @@ this package: endpoints, router helpers, and Ecto-backed stores wired together.
 
 - **Vendor-neutral.** No coupling to Auth0, Okta, Cognito, or any particular IdP. The token shape is yours, and the same issuer can serve several kinds of principal (a machine client, a human session) from one signing key and one verifier.
 - **Sender-constrained by design.** DPoP (RFC 9449) and certificate-bound tokens (RFC 8705) are part of the core, with the `cnf` binding matrix enforced on both issue and verify.
-- **Protocol, not policy.** Attesto pins the algorithm, selects the key by `kid`, canonicalises thumbprints, compares in constant time, and rejects replay. Whether a given principal may hold a given scope stays in your application.
+- **Short-lived and locally verifiable.** Access tokens are signed JWTs that resource servers can verify without a shared token database. Refresh-token rotation, reuse detection, and revocation hooks cover the stateful parts that should stay stateful.
+- **Protocol, not policy.** Attesto selects keys by key ID ([`kid`](https://datatracker.ietf.org/doc/html/rfc7515#section-4.1.4)), verifies the configured signing algorithms, canonicalises thumbprints, compares in constant time, and rejects replay. Whether a given principal may hold a given scope stays in your application.
 - **Pluggable keys.** Use the bundled static keystore (which derives the public half from the private key so the two can never drift), or implement the `Attesto.Keystore` behaviour against your own KMS or rotation story.
 - **Cross-language parity.** The test suite verifies Attesto-issued tokens and proofs against a reference implementation in another language, so the wire format is exactly what other ecosystems expect.
 
