@@ -43,6 +43,8 @@ defmodule Attesto.RefreshStore do
       client, optional DPoP thumbprint, host claims).
     * `:expires_at` - absolute expiry, unix seconds.
     * `:consumed` - whether the token has been rotated already.
+    * `:consumed_at` - unix second when the token was rotated, or `nil`.
+    * `:successor` - retry data for the immediately issued successor, or `nil`.
   """
 
   @type token_hash :: String.t()
@@ -54,7 +56,9 @@ defmodule Attesto.RefreshStore do
           required(:generation) => non_neg_integer(),
           required(:data) => map(),
           required(:expires_at) => integer(),
-          required(:consumed) => boolean()
+          required(:consumed) => boolean(),
+          optional(:consumed_at) => integer() | nil,
+          optional(:successor) => map() | nil
         }
 
   @doc """
@@ -85,7 +89,19 @@ defmodule Attesto.RefreshStore do
   also closes the read-then-claim race (a concurrent rotation that claimed
   the token first surfaces here as `{:reuse, record}`).
   """
-  @callback consume(token_hash()) :: {:ok, entry()} | {:reuse, entry()} | :error
+  @callback consume(token_hash(), keyword()) :: {:ok, entry()} | {:reuse, entry()} | :error
+
+  @doc """
+  Record the successor minted from an already-consumed parent.
+
+  Used for refresh-rotation idempotency: if the response carrying the new
+  refresh token is lost and the same client immediately retries the old token,
+  `Attesto.RefreshToken.rotate/3` may return the same successor instead of
+  revoking the family. Stores that cannot retain the successor safely MUST fail
+  closed by returning `:error`; rotation still succeeds, but a later retry will
+  be treated as reuse.
+  """
+  @callback remember_successor(token_hash(), map(), keyword()) :: :ok | :error
 
   @doc """
   Revoke a token family: remove every token in `family_id` AND mark the

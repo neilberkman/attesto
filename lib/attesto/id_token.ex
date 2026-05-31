@@ -42,6 +42,20 @@ defmodule Attesto.IDToken do
   There is deliberately no `scope` claim: scope is a property of the
   authorization grant, not of the identity assertion.
 
+  ## Additional claims (`claims` parameter / userinfo mapping)
+
+  Claims an RP requests through the OIDC Core §5.5 `claims` request
+  parameter, or that a host maps from its userinfo source, are passed to
+  `mint/3` as `:extra_claims`: a string-keyed map merged after the protocol
+  claims above. The merge is non-overriding by construction - a key that
+  collides with a reserved protocol claim (`iss`, `sub`, `aud`, `exp`,
+  `iat`, `nonce`, `azp`, `auth_time`, `acr`, `amr`, `at_hash`, `c_hash`) is
+  rejected with `:reserved_claim_conflict` rather than silently shadowing
+  the value this module computes; a non-map or non-string-keyed value is
+  `:invalid_extra_claims`. This keeps claim provenance in the caller (the
+  host/RP decides which profile claims to assert) while the protocol claims
+  stay authoritative.
+
   ## Hash claims
 
   `at_hash` and `c_hash` use the same construction (OIDC Core §3.1.3.6,
@@ -66,12 +80,6 @@ defmodule Attesto.IDToken do
   # left-most 128 bits / 16 bytes (OIDC Core §3.1.3.6).
   @hash_alg :sha256
   @hash_half_bytes 16
-
-  # Same compact-form boundary as Attesto.Token: base64url alphabet, no
-  # padding. Empty is permitted so an unsecured alg:none token with an empty
-  # signature segment falls through to the signature verifier and is classified
-  # as :invalid_signature.
-  @base64url_segment ~r/\A[A-Za-z0-9_-]*\z/
 
   # 1 hour. ID Token lifetime is a host policy; this is a sane default and
   # may only be shortened, mirroring `Attesto.Token`'s lifetime cap.
@@ -331,15 +339,33 @@ defmodule Attesto.IDToken do
     end
   end
 
+  # RFC 7515 §2 / RFC 4648 §5: a compact-JWS segment is unpadded base64url
+  # in *canonical* form. Mirror Attesto.Token exactly: round-trip each
+  # segment through Base.url_decode64/encode64 and require it come back
+  # byte-identical, rejecting `=` padding, non-alphabet bytes, AND a partial
+  # final quantum whose unused low bits are non-zero (two distinct trailing
+  # characters would otherwise decode to the same bytes, letting a
+  # re-encoded variant of the issuer's signature verify). This happens
+  # before JOSE, whose decoder would tolerantly normalise such a segment.
+  # The empty signature segment of an unsecured `alg:none` token round-trips
+  # ("" decodes and re-encodes to ""), so it passes this boundary and is
+  # classified downstream as :invalid_signature, not :invalid_token.
   defp check_compact_form(jwt) do
     case String.split(jwt, ".") do
       [_, _, _] = segments ->
-        if Enum.all?(segments, &Regex.match?(@base64url_segment, &1)),
+        if Enum.all?(segments, &canonical_base64url?/1),
           do: :ok,
           else: {:error, :invalid_token}
 
       _ ->
         {:error, :invalid_token}
+    end
+  end
+
+  defp canonical_base64url?(segment) do
+    case Base.url_decode64(segment, padding: false) do
+      {:ok, decoded} -> Base.url_encode64(decoded, padding: false) == segment
+      :error -> false
     end
   end
 

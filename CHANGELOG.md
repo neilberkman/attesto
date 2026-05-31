@@ -6,6 +6,84 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0]
+
+### Added
+
+- `Attesto.IDToken.mint/3` rounds out the OpenID Connect Core §2 ID Token
+  claim set: `auth_time` (REQUIRED when the request asked for it or carried
+  `max_age`), `acr`, `amr`, and `azp` are accepted as optional inputs and
+  omitted when absent. Arbitrary additional claims requested through the
+  OIDC Core §5.5 `claims` parameter or a host userinfo mapping are supplied
+  via `:extra_claims`, a string-keyed map merged after the protocol claims.
+  The merge is non-overriding: a key colliding with a reserved protocol
+  claim (`iss`, `sub`, `aud`, `exp`, `iat`, `nonce`, `azp`, `auth_time`,
+  `acr`, `amr`, `at_hash`, `c_hash`) is rejected with
+  `:reserved_claim_conflict`, and a non-map or non-string-keyed value with
+  `:invalid_extra_claims`. `at_hash`/`c_hash` (OIDC Core §3.1.3.6,
+  §3.3.2.11) were already present.
+- `Attesto.AuthorizationRequest.validate/2` - `:require_nonce` option (default
+  `false`). When `true`, a request with no `nonce` is rejected with a
+  redirectable `invalid_request` error (OIDC Core §3.1.2.1); when `false`,
+  `nonce` stays OPTIONAL and is carried through unenforced (RFC 6749 keeps the
+  `code` flow at SHOULD). The OP policy is the host's, signalled per call.
+- Authorization-code reuse detection (OAuth 2.0 Security BCP §4.13 /
+  RFC 6749 §4.1.2). `Attesto.AuthorizationCode.issue/3` accepts an
+  optional `:family_id` that links a code to the refresh-token family it
+  spawns; it rides onto the redeemed `Attesto.AuthorizationCode.Grant`
+  (new `:family_id` field). `Attesto.CodeStore` gains an OPTIONAL
+  reuse-tracking pair: a `mark_consumed/2` callback and a third `take/1`
+  return value `{:error, :consumed, meta}`. When a store implements them,
+  `redeem/4` records the spent code's `family_id`/`subject` and surfaces a
+  later replay of that code as `{:error, {:reuse, meta}}` so the caller can
+  revoke the descendant family. The addition is purely additive and
+  fail-safe: a store that does not implement the pair keeps the
+  `{:ok, entry} | :error` `take/1` contract and a re-presented code stays
+  `{:error, :invalid_grant}`, with single-use atomicity unchanged.
+- Refresh-token rotation grace for honest retries. `Attesto.RefreshToken.rotate/3`
+  now returns the same successor when the just-consumed parent is immediately
+  retried by the same client, DPoP binding, and narrowed scope within
+  `:rotation_grace_seconds` (default `10`). Outside that window, or on any
+  mismatch, reuse still revokes the whole family. `Attesto.RefreshStore`
+  entries now carry `:consumed_at` and `:successor`, and stores may implement
+  `remember_successor/3` to support the idempotent retry path.
+- `Attesto.Plug.Authenticate` accepts a `:credential_from_conn` fallback hook
+  for host-owned credential channels such as first-party cookies. The
+  `Authorization` header remains authoritative when present; the callback is
+  consulted only when no usable header credential exists.
+- `Attesto.Plug.OAuthError` supports transport hooks (`:send_error`,
+  `:www_authenticate`, `:no_store`) so hosts can preserve their API error
+  envelope while Attesto owns the OAuth status/challenge semantics.
+
+### Changed
+
+- `Attesto.AuthorizationRequest.validate/2` - `prompt` tokens are now validated
+  against the fixed OIDC set `{none, login, consent, select_account}`; an unknown
+  token is a redirectable `invalid_request` error (OIDC Core §3.1.2.1). The
+  parsed list is still exposed for the controller, which enforces semantics such
+  as `prompt=none` (the OP MUST NOT show UI).
+- `Attesto.RefreshStore.consume/2` receives the claim timestamp and returns
+  consumed records with enough metadata for retry/reuse decisions. This is the
+  intentional 0.6 store-contract change.
+
+### Security
+
+- Closed a JWS signature-malleability gap in the compact-form boundary of
+  both `Attesto.Token.verify/3` and `Attesto.IDToken.verify/3`. The boundary
+  previously checked each segment against the base64url alphabet only
+  (RFC 4648 §5), which accepts a non-canonical final character: the 342-byte
+  RS256 signature segment is a partial quantum (342 rem 4 == 2) whose last
+  character carries four unused low-order bits, so several distinct
+  characters decode to the same signature bytes (RFC 4648 §3.5). JOSE's
+  liberal decoder normalises such a variant and verifies it, so a tampered
+  serialization that is not byte-identical to the issuer's token was
+  accepted. The boundary now requires each segment to round-trip through
+  `Base.url_decode64/2` and `Base.url_encode64/2` byte-identically, rejecting
+  padding, non-alphabet bytes, and non-zero unused trailing bits in one
+  check, before the token reaches JOSE. Canonical unpadded base64url tokens
+  are unaffected; the empty signature segment of an `alg:none` token still
+  round-trips and is classified `:invalid_signature`.
+
 ## [0.5.1]
 
 ### Added

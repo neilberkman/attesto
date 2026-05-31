@@ -4,9 +4,12 @@ defmodule Attesto.RefreshToken do
   (RFC 6749 §6 / §10.4, OAuth 2.0 Security BCP).
 
   Each refresh token is single-use: presenting it (`rotate/3`) consumes it
-  and mints a successor in the same *family*. If a token that has already
-  been rotated is presented again, that is a captured-token signal, and
-  the entire family is revoked so neither the attacker nor the victim can
+  and mints a successor in the same *family*. A short idempotency window
+  (10 seconds by default) lets the same client retry the just-consumed
+  parent after a lost response and receive the same successor. Outside
+  that window, or when the retry does not match the original client,
+  binding, and scope, a rotated token is a captured-token signal and the
+  entire family is revoked so neither the attacker nor the victim can
   continue, forcing a fresh authorization.
 
   This module is pure logic over a `Attesto.RefreshStore`; the store
@@ -96,7 +99,9 @@ defmodule Attesto.RefreshToken do
              generation: generation,
              data: data,
              expires_at: unix_now(opts) + ttl,
-             consumed: false
+             consumed: false,
+             consumed_at: nil,
+             successor: nil
            }) do
         :ok -> {:ok, %{token: token, family_id: family_id, generation: generation}}
         {:error, :family_revoked} = err -> err
@@ -112,10 +117,11 @@ defmodule Attesto.RefreshToken do
   generation, and `context` is the grant context to mint the next access
   token from.
 
-  If the presented token was already rotated, the whole family is revoked
-  and `{:error, :reuse_detected}` is returned. Other failures:
-  `:invalid_grant` (unknown token), `:expired`, `:client_mismatch`,
-  `:invalid_scope`, and the DPoP binding errors.
+  If the presented token was already rotated, an immediate matching retry
+  returns the original successor within `:rotation_grace_seconds`;
+  otherwise the whole family is revoked and `{:error, :reuse_detected}` is
+  returned. Other failures: `:invalid_grant` (unknown token), `:expired`,
+  `:client_mismatch`, `:invalid_scope`, and the DPoP binding errors.
 
   Options:
 
@@ -133,6 +139,9 @@ defmodule Attesto.RefreshToken do
       request for any scope not granted is `:invalid_scope` (no
       escalation). Omitted, the successor carries the full granted scope.
     * `:ttl` - lifetime for the successor.
+    * `:rotation_grace_seconds` - idempotency window for an immediate retry of
+      the just-rotated token. Defaults to `10`; set `0` for strict reuse
+      revocation.
 
   Recoverable failures (`:client_mismatch`, `:invalid_scope`, `:expired`,
   the DPoP binding errors) are checked on a non-consuming read *before*
@@ -145,15 +154,33 @@ defmodule Attesto.RefreshToken do
   def rotate(store, presented_token, opts \\ []) when is_atom(store) and is_binary(presented_token) and is_list(opts) do
     case store.get(Secret.hash(presented_token)) do
       {:ok, %{consumed: true} = record} ->
-        # A replayed, already-rotated token: the attack signal.
-        :ok = store.revoke_family(record.family_id)
-        {:error, :reuse_detected}
+        maybe_idempotent_retry_or_reuse(store, record, opts)
 
       {:ok, %{consumed: false} = record} ->
         rotate_unconsumed(store, record, opts)
 
       :error ->
         {:error, :invalid_grant}
+    end
+  end
+
+  defp maybe_idempotent_retry_or_reuse(store, record, opts) do
+    with true <- within_rotation_grace?(record, opts),
+         :ok <- check_client(record.data, opts),
+         :ok <- check_dpop(record.data, opts),
+         {:ok, scope} <- resolve_scope(record.data, opts),
+         {:ok, successor} <- same_successor(record, scope) do
+      {:ok,
+       %{
+         token: successor.token,
+         family_id: record.family_id,
+         generation: successor.generation,
+         context: successor.context
+       }}
+    else
+      _ ->
+        :ok = store.revoke_family(record.family_id)
+        {:error, :reuse_detected}
     end
   end
 
@@ -165,7 +192,7 @@ defmodule Attesto.RefreshToken do
          :ok <- check_expiry(record, opts),
          :ok <- check_dpop(record.data, opts),
          {:ok, scope} <- resolve_scope(record.data, opts),
-         {:ok, claimed} <- claim(store, record) do
+         {:ok, claimed} <- claim(store, record, opts) do
       issue_successor(store, claimed, scope, opts)
     end
   end
@@ -180,6 +207,17 @@ defmodule Attesto.RefreshToken do
            now: Keyword.get(opts, :now)
          ) do
       {:ok, issued} ->
+        _ =
+          store.remember_successor(
+            claimed.token_hash,
+            %{
+              token: issued.token,
+              generation: issued.generation,
+              context: successor_data
+            },
+            now: unix_now(opts)
+          )
+
         {:ok,
          %{
            token: issued.token,
@@ -236,8 +274,8 @@ defmodule Attesto.RefreshToken do
   # The atomic claim. Closes the read-then-claim race: if a concurrent
   # rotation claimed this token between our read and here, `consume`
   # reports `{:reuse, _}` and we revoke the family.
-  defp claim(store, record) do
-    case store.consume(record.token_hash) do
+  defp claim(store, record, opts) do
+    case store.consume(record.token_hash, now: unix_now(opts)) do
       {:ok, claimed} ->
         {:ok, claimed}
 
@@ -247,6 +285,25 @@ defmodule Attesto.RefreshToken do
 
       :error ->
         {:error, :invalid_grant}
+    end
+  end
+
+  defp within_rotation_grace?(record, opts) do
+    grace = Keyword.get(opts, :rotation_grace_seconds, 10)
+    consumed_at = Map.get(record, :consumed_at)
+
+    is_integer(grace) and grace > 0 and is_integer(consumed_at) and
+      unix_now(opts) - consumed_at <= grace
+  end
+
+  defp same_successor(record, scope) do
+    case Map.get(record, :successor) do
+      %{token: token, generation: generation, context: %{scope: ^scope} = context}
+      when is_binary(token) and is_integer(generation) ->
+        {:ok, %{token: token, generation: generation, context: context}}
+
+      _ ->
+        {:error, :no_successor}
     end
   end
 

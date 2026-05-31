@@ -121,12 +121,21 @@ defmodule Attesto.GrantsSmokeTest do
       refute t1 == t0
     end
 
-    test "presenting an already-rotated token triggers reuse detection and revokes the family" do
+    test "an immediate honest retry of an already-rotated token is idempotent" do
       {:ok, %{token: t0}} = RefreshToken.issue(RefreshStore.ETS, %{subject: "usr_42"})
       {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0)
 
-      # Replay the consumed t0: reuse detected.
-      assert {:error, :reuse_detected} = RefreshToken.rotate(RefreshStore.ETS, t0)
+      # A lost response can make the legitimate client retry the just-consumed
+      # parent. Within the short grace window, return the same successor.
+      assert {:ok, %{token: ^t1}} = RefreshToken.rotate(RefreshStore.ETS, t0)
+    end
+
+    test "strict rotation mode treats an already-rotated token as reuse" do
+      {:ok, %{token: t0}} = RefreshToken.issue(RefreshStore.ETS, %{subject: "usr_42"})
+      {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0)
+
+      assert {:error, :reuse_detected} =
+               RefreshToken.rotate(RefreshStore.ETS, t0, rotation_grace_seconds: 0)
 
       # The whole family is revoked, so the live t1 no longer rotates.
       assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t1)

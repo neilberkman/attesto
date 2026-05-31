@@ -89,6 +89,21 @@ defmodule Attesto.IDTokenTest do
       assert claims["amr"] == ["pwd", "otp"]
     end
 
+    test "includes auth_time alone when supplied (OIDC Core §2)", %{config: config} do
+      # auth_time is REQUIRED when the request asked for it or carried
+      # max_age (OIDC Core §2); supplied on its own it stands without acr/amr.
+      assert {:ok, jwt} = IDToken.mint(config, @subject, @client_id, auth_time: 1_700_000_500)
+      claims = payload!(jwt)
+      assert claims["auth_time"] == 1_700_000_500
+      refute Map.has_key?(claims, "acr")
+      refute Map.has_key?(claims, "amr")
+    end
+
+    test "includes azp alone when supplied (OIDC Core §2)", %{config: config} do
+      assert {:ok, jwt} = IDToken.mint(config, @subject, @client_id, azp: @client_id)
+      assert payload!(jwt)["azp"] == @client_id
+    end
+
     test "computes at_hash per OIDC Core §3.1.3.6", %{config: config} do
       # Canonical vector (OIDC Core §3.1.3.6, RS256/SHA-256):
       # access_token "jHkWEdUXMU1BwAsC4vtUsZwnNvTIxEl0z9K3vx5KF0Y"
@@ -118,6 +133,17 @@ defmodule Attesto.IDTokenTest do
       claims = payload!(jwt)
       assert claims["email"] == "u@example.test"
       assert claims["email_verified"] == true
+    end
+
+    test ":extra_claims survive a verify/3 round-trip", %{config: config} do
+      assert {:ok, jwt} =
+               IDToken.mint(config, @subject, @client_id,
+                 extra_claims: %{"email" => "u@example.test", "groups" => ["admin", "ops"]}
+               )
+
+      assert {:ok, claims} = IDToken.verify(config, jwt, client_id: @client_id)
+      assert claims["email"] == "u@example.test"
+      assert claims["groups"] == ["admin", "ops"]
     end
 
     test "a lifetime larger than the default is capped to the default", %{config: config} do
@@ -352,6 +378,37 @@ defmodule Attesto.IDTokenTest do
                "expected padding in segment #{index} to be rejected"
       end
     end
+
+    # RFC 4648 §3.5: the 342-byte RS256 signature segment is a partial
+    # quantum, so its last character has unused low-order bits and several
+    # distinct characters decode to the same signature bytes. Swapping the
+    # trailing character for a same-decoding sibling is a different string
+    # that decodes to the issuer's signature; the canonical-form boundary
+    # MUST reject it before JOSE's liberal decoder normalises and accepts it.
+    test "rejects a non-canonical trailing signature character (malleability)", %{config: config} do
+      now = 1_700_000_000
+      assert {:ok, jwt} = IDToken.mint(config, @subject, @client_id, now: now)
+      mutated = swap_trailing_sibling(jwt)
+
+      assert mutated != jwt
+      assert {:error, :invalid_token} = IDToken.verify(config, mutated, client_id: @client_id, now: now)
+    end
+  end
+
+  # Replace the final base64url character of the signature segment with a
+  # different character that decodes to the same bytes (RFC 4648 §3.5).
+  defp swap_trailing_sibling(jwt) do
+    [header, payload, sig] = String.split(jwt, ".")
+    decoded = Base.url_decode64!(sig, padding: false)
+    prefix = binary_part(sig, 0, byte_size(sig) - 1)
+    last = :binary.at(sig, byte_size(sig) - 1)
+
+    sibling =
+      Enum.find(~c"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", fn c ->
+        c != last and match?({:ok, ^decoded}, Base.url_decode64(prefix <> <<c>>, padding: false))
+      end)
+
+    Enum.join([header, payload, prefix <> <<sibling>>], ".")
   end
 
   defp signed_id_token(config, overrides, header_overrides) do

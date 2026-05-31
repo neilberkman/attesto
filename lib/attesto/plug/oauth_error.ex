@@ -18,8 +18,11 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     Each helper sets the status, the `WWW-Authenticate` header (and
     `DPoP-Nonce` when relevant), writes a small JSON body, and halts the
-    pipeline. This module is part of the optional `Attesto.Plug` layer; it
-    only compiles when `Plug` is available.
+    pipeline. Hosts may override only the transport details with `:send_error`,
+    `:www_authenticate`, and `:no_store` callbacks; the OAuth error code,
+    status, and challenge semantics remain owned here. This module is part of
+    the optional `Attesto.Plug` layer; it only compiles when `Plug` is
+    available.
     """
 
     import Plug.Conn
@@ -38,7 +41,8 @@ if Code.ensure_loaded?(Plug.Conn) do
 
       conn
       |> maybe_put_dpop_nonce(Keyword.get(opts, :dpop_nonce))
-      |> put_resp_header("www-authenticate", challenge(scheme, params))
+      |> put_no_store(opts)
+      |> put_www_authenticate(challenge(scheme, params), opts)
       |> send_error(401, error, opts)
     end
 
@@ -57,7 +61,8 @@ if Code.ensure_loaded?(Plug.Conn) do
       ]
 
       conn
-      |> put_resp_header("www-authenticate", challenge(scheme, params))
+      |> put_no_store([])
+      |> put_www_authenticate(challenge(scheme, params), [])
       |> send_error(403, "insufficient_scope", description: "requires scope: #{scope}")
     end
 
@@ -88,16 +93,61 @@ if Code.ensure_loaded?(Plug.Conn) do
       body =
         %{"error" => error}
         |> maybe_put("error_description", Keyword.get(opts, :description))
-        |> JSON.encode!()
 
-      conn
-      |> put_resp_content_type("application/json")
-      |> send_resp(status, body)
-      |> halt()
+      case Keyword.get(opts, :send_error) do
+        fun when is_function(fun, 3) ->
+          fun.(conn, status, body)
+
+        {module, fun} when is_atom(module) and is_atom(fun) ->
+          apply(module, fun, [conn, status, body])
+
+        {module, fun, extra} when is_atom(module) and is_atom(fun) and is_list(extra) ->
+          apply(module, fun, [conn, status, body | extra])
+
+        _ ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(status, JSON.encode!(body))
+          |> halt()
+      end
     end
 
     defp maybe_put(map, _key, nil), do: map
     defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+    defp put_www_authenticate(conn, challenge, opts) do
+      case Keyword.get(opts, :www_authenticate) do
+        fun when is_function(fun, 2) ->
+          fun.(conn, challenge)
+
+        {module, fun} when is_atom(module) and is_atom(fun) ->
+          apply(module, fun, [conn, challenge])
+
+        {module, fun, extra} when is_atom(module) and is_atom(fun) and is_list(extra) ->
+          apply(module, fun, [conn, challenge | extra])
+
+        _ ->
+          put_resp_header(conn, "www-authenticate", challenge)
+      end
+    end
+
+    defp put_no_store(conn, opts) do
+      case Keyword.get(opts, :no_store) do
+        fun when is_function(fun, 1) ->
+          fun.(conn)
+
+        {module, fun} when is_atom(module) and is_atom(fun) ->
+          apply(module, fun, [conn])
+
+        {module, fun, extra} when is_atom(module) and is_atom(fun) and is_list(extra) ->
+          apply(module, fun, [conn | extra])
+
+        _ ->
+          conn
+          |> put_resp_header("cache-control", "no-store")
+          |> put_resp_header("pragma", "no-cache")
+      end
+    end
 
     # `WWW-Authenticate` auth-param values are quoted-strings; escape the
     # two characters that would break out of the quotes.

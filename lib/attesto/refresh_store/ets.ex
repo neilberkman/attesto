@@ -67,7 +67,13 @@ defmodule Attesto.RefreshStore.ETS do
   end
 
   @impl Attesto.RefreshStore
-  def consume(token_hash) when is_binary(token_hash), do: GenServer.call(__MODULE__, {:consume, token_hash})
+  def consume(token_hash, opts \\ []) when is_binary(token_hash) and is_list(opts),
+    do: GenServer.call(__MODULE__, {:consume, token_hash, opts})
+
+  @impl Attesto.RefreshStore
+  def remember_successor(token_hash, successor, opts \\ [])
+      when is_binary(token_hash) and is_map(successor) and is_list(opts),
+      do: GenServer.call(__MODULE__, {:remember_successor, token_hash, successor, opts})
 
   @impl Attesto.RefreshStore
   def revoke_family(family_id) when is_binary(family_id), do: GenServer.call(__MODULE__, {:revoke_family, family_id})
@@ -103,7 +109,9 @@ defmodule Attesto.RefreshStore.ETS do
     end
   end
 
-  def handle_call({:consume, token_hash}, _from, state) do
+  def handle_call({:consume, token_hash, opts}, _from, state) do
+    now = Keyword.get(opts, :now, System.system_time(:second))
+
     reply =
       case :ets.lookup(@table, token_hash) do
         [] ->
@@ -113,9 +121,27 @@ defmodule Attesto.RefreshStore.ETS do
           {:reuse, record}
 
         [{^token_hash, family, exp, %{consumed: false} = record}] ->
-          consumed = %{record | consumed: true}
+          consumed =
+            record
+            |> Map.put(:consumed, true)
+            |> Map.put(:consumed_at, now)
+
           true = :ets.insert(@table, {token_hash, family, exp, consumed})
           {:ok, record}
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:remember_successor, token_hash, successor, _opts}, _from, state) do
+    reply =
+      case :ets.lookup(@table, token_hash) do
+        [{^token_hash, family, exp, %{consumed: true} = record}] ->
+          true = :ets.insert(@table, {token_hash, family, exp, Map.put(record, :successor, successor)})
+          :ok
+
+        _ ->
+          :error
       end
 
     {:reply, reply, state}

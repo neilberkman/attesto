@@ -11,13 +11,19 @@ defmodule Attesto.AuthorizationCode do
   redirect-URI match, the PKCE transform, the DPoP key binding) is
   protocol.
 
-  ## PKCE is mandatory
+  ## PKCE (S256), required by default
 
-  `issue/3` requires a valid S256 `code_challenge`; there is no
-  PKCE-less path. A redemption without a matching `code_verifier` fails.
-  This closes authorization-code interception for public clients and is
-  the modern default (OAuth 2.0 Security BCP). Only S256 is accepted
-  (see `Attesto.PKCE`).
+  `issue/3` accepts a valid S256 `code_challenge` and `redeem/4` checks the
+  matching `code_verifier`; only S256 is accepted (see `Attesto.PKCE`). This
+  closes authorization-code interception and is the modern default (OAuth 2.0
+  Security BCP / RFC 9700). PKCE enforcement at the authorization endpoint is
+  governed by `Attesto.AuthorizationRequest`'s `:require_pkce` option (default
+  `true`); a host MAY relax it for a *confidential* client (public clients MUST
+  use PKCE, RFC 9700 §2.1.1), in which case a code is issued with no challenge
+  and redeemed with no verifier. A `code_challenge` that is present is always
+  fully enforced. `issue/3` therefore treats `:code_challenge` as optional: when
+  given it must be a valid S256 challenge, when absent the code is unbound and a
+  later redemption MUST present no `code_verifier`.
 
   ## Single use even on failure
 
@@ -25,6 +31,31 @@ defmodule Attesto.AuthorizationCode do
   validating it, so a presented code is spent whether or not the
   redemption succeeds. An attacker who captures a code cannot make
   repeated validation attempts against it.
+
+  ## Code-reuse detection (when the store supports it)
+
+  Single use alone cannot distinguish a *replay of an already-redeemed
+  code* from a *never-issued code*: once `take/1` removes the row, both
+  look absent. OAuth 2.0 Security BCP §4.13 (and RFC 6749 §4.1.2) say the
+  AS SHOULD, on a second presentation of a code, revoke the tokens already
+  issued from its first redemption, because a re-presented code is an
+  attack signal.
+
+  `redeem/4` enables that when - and only when - the `Attesto.CodeStore`
+  implements the optional reuse-tracking pair (`c:Attesto.CodeStore.take/1`
+  returning `{:error, :consumed, meta}` plus
+  `c:Attesto.CodeStore.mark_consumed/2`). On a successful redemption the
+  redeemer records the code's `family_id`/`subject` via `mark_consumed/2`;
+  a later redemption of the same code then yields
+  `{:error, {:reuse, meta}}`, where `meta` carries that first redemption's
+  context so the caller can revoke the descendant family (e.g. via
+  `Attesto.Revocation`). A store that does not implement the pair behaves
+  exactly as before: a re-presented code is `{:error, :invalid_grant}`.
+  This is additive and fail-safe (see `Attesto.CodeStore`).
+
+  Pass a `:family_id` to `issue/3` to link the code to the refresh-token
+  family it will spawn; it rides onto the returned `Grant` so the host
+  mints the family under that id, and it is what reuse detection replays.
 
   ## DPoP-bound codes
 
@@ -45,11 +76,12 @@ defmodule Attesto.AuthorizationCode do
   @type issue_attrs :: %{
           required(:client_id) => String.t(),
           required(:redirect_uri) => String.t(),
-          required(:code_challenge) => String.t(),
+          optional(:code_challenge) => String.t() | nil,
           required(:subject) => String.t(),
           optional(:scope) => [String.t()],
           optional(:code_challenge_method) => String.t(),
           optional(:dpop_jkt) => String.t() | nil,
+          optional(:family_id) => String.t() | nil,
           optional(:claims) => map()
         }
 
@@ -61,6 +93,7 @@ defmodule Attesto.AuthorizationCode do
           | :invalid_subject
           | :invalid_scope
           | :invalid_dpop_jkt
+          | :invalid_family_id
           | :invalid_claims
 
   @type redeem_params :: %{
@@ -80,15 +113,20 @@ defmodule Attesto.AuthorizationCode do
           | :dpop_proof_required
           | :dpop_proof_unexpected
           | :dpop_binding_mismatch
+          | {:reuse, Attesto.CodeStore.consumed_meta()}
 
   @doc """
   Mint a single-use authorization code and persist it via `store`.
 
-  `attrs` MUST carry `:client_id`, `:redirect_uri`, a valid S256
-  `:code_challenge`, and `:subject`. Optional `:scope` (a list of
-  strings, default `[]`), `:code_challenge_method` (must be `"S256"` if
-  given), `:dpop_jkt` (binds the code to a DPoP key), and `:claims` (an
-  opaque host context map round-tripped to `redeem/4`).
+  `attrs` MUST carry `:client_id`, `:redirect_uri`, and `:subject`.
+  Optional `:code_challenge` binds the code to PKCE; when present,
+  `:code_challenge_method` must be `"S256"` if given. Optional `:scope` (a
+  list of strings, default `[]`), `:dpop_jkt` (binds the code to a DPoP key),
+  `:family_id` (a
+  non-empty string linking this code to the refresh-token family it will
+  spawn; rides onto the redeemed `Grant` and is what code-reuse detection
+  replays - see the moduledoc), and `:claims` (an opaque host context map
+  round-tripped to `redeem/4`).
 
   Options: `:ttl` (seconds the code is valid, default
   #{@default_ttl_seconds}) and `:now` (clock override).
@@ -99,7 +137,7 @@ defmodule Attesto.AuthorizationCode do
   """
   @spec issue(module(), issue_attrs(), keyword()) :: {:ok, String.t()} | {:error, issue_error()}
   def issue(store, attrs, opts \\ []) when is_atom(store) and is_map(attrs) and is_list(opts) do
-    with :ok <- validate_method(Map.get(attrs, :code_challenge_method, "S256")),
+    with :ok <- validate_method(attrs),
          {:ok, data} <- normalize_issue_attrs(attrs) do
       code = Secret.generate()
       ttl = Keyword.get(opts, :ttl, @default_ttl_seconds)
@@ -132,27 +170,60 @@ defmodule Attesto.AuthorizationCode do
   The code is consumed (single use) before validation. Returns
   `{:ok, %Attesto.AuthorizationCode.Grant{}}` with the validated grant
   context, or `{:error, reason}`.
+
+  When the `store` implements optional reuse tracking (see
+  `Attesto.CodeStore`), a second redemption of a code that was already
+  successfully redeemed returns `{:error, {:reuse, meta}}` rather than
+  `{:error, :invalid_grant}`. `meta` carries the first redemption's
+  `:family_id` and `:subject` so the caller can revoke the descendant
+  family (OAuth 2.0 Security BCP §4.13). Codes the store has never seen
+  remain `{:error, :invalid_grant}`.
   """
   @spec redeem(module(), String.t(), redeem_params(), keyword()) ::
           {:ok, Grant.t()} | {:error, redeem_error()}
   def redeem(store, code, params, opts \\ []) when is_atom(store) and is_binary(code) and is_map(params) do
     case store.take(Secret.hash(code)) do
       {:ok, record} ->
-        validate_redemption(record, params, opts)
+        redeem_taken(store, Secret.hash(code), record, params, opts)
+
+      # OAuth 2.0 Security BCP §4.13 / RFC 6749 §4.1.2: a re-presented,
+      # already-redeemed code is the reuse attack signal. Only stores with
+      # reuse tracking return this; surface the first redemption's context
+      # so the caller can revoke the descendant family.
+      {:error, :consumed, meta} ->
+        {:error, {:reuse, meta}}
 
       :error ->
         {:error, :invalid_grant}
     end
   end
 
-  defp validate_redemption(%{data: data, expires_at: expires_at}, params, opts) do
+  defp redeem_taken(store, code_hash, %{data: data, expires_at: expires_at}, params, opts) do
     with :ok <- check_expiry(expires_at, opts),
          :ok <- check_client(data, params, opts),
          :ok <- check_redirect_uri(data, params),
          :ok <- check_pkce(data, params),
          :ok <- check_dpop(data, params) do
-      {:ok, Grant.from_data(data)}
+      grant = Grant.from_data(data)
+      record_consumption(store, code_hash, grant)
+      {:ok, grant}
     end
+  end
+
+  # Record the successful redemption so a re-presentation of the same code
+  # is detectable as reuse (OAuth 2.0 Security BCP §4.13). Only stores that
+  # implement the optional `mark_consumed/2` callback get the marker; the
+  # absence of the callback leaves single-use behaviour unchanged and is
+  # fail-safe (see `Attesto.CodeStore`). `meta` links the spent code to the
+  # family it spawned so the caller can revoke descendants on a later
+  # replay. A failed redemption never marks consumed: the code is already
+  # spent by `take/1`, and we have no validated family to record.
+  defp record_consumption(store, code_hash, %Grant{} = grant) do
+    if function_exported?(store, :mark_consumed, 2) do
+      :ok = store.mark_consumed(code_hash, %{family_id: grant.family_id, subject: grant.subject})
+    end
+
+    :ok
   end
 
   # RFC 6749 §4.1.3: the code must be redeemed by the client it was issued
@@ -173,47 +244,52 @@ defmodule Attesto.AuthorizationCode do
 
   # ----- issue validation -----
 
-  defp validate_method("S256"), do: :ok
-  defp validate_method(_), do: {:error, :unsupported_code_challenge_method}
+  defp validate_method(attrs) do
+    case {Map.get(attrs, :code_challenge), Map.get(attrs, :code_challenge_method)} do
+      {nil, nil} -> :ok
+      {nil, _method} -> {:error, :unsupported_code_challenge_method}
+      {_challenge, nil} -> :ok
+      {_challenge, "S256"} -> :ok
+      {_challenge, _method} -> {:error, :unsupported_code_challenge_method}
+    end
+  end
 
   defp normalize_issue_attrs(attrs) do
     scope = Map.get(attrs, :scope, [])
     dpop_jkt = Map.get(attrs, :dpop_jkt)
+    family_id = Map.get(attrs, :family_id)
+    claims = Map.get(attrs, :claims, %{})
 
-    cond do
-      not non_empty_binary?(Map.get(attrs, :client_id)) ->
-        {:error, :invalid_client_id}
-
-      not non_empty_binary?(Map.get(attrs, :redirect_uri)) ->
-        {:error, :invalid_redirect_uri}
-
-      not PKCE.valid_challenge?(Map.get(attrs, :code_challenge)) ->
-        {:error, :invalid_code_challenge}
-
-      not non_empty_binary?(Map.get(attrs, :subject)) ->
-        {:error, :invalid_subject}
-
-      not valid_scope?(scope) ->
-        {:error, :invalid_scope}
-
-      not valid_optional_jkt?(dpop_jkt) ->
-        {:error, :invalid_dpop_jkt}
-
-      not is_map(Map.get(attrs, :claims, %{})) ->
-        {:error, :invalid_claims}
-
-      true ->
-        {:ok,
-         %{
-           client_id: attrs.client_id,
-           redirect_uri: attrs.redirect_uri,
-           code_challenge: attrs.code_challenge,
-           subject: attrs.subject,
-           scope: scope,
-           dpop_jkt: dpop_jkt,
-           claims: Map.get(attrs, :claims, %{})
-         }}
+    with :ok <- validate_issue_attrs(attrs, scope, dpop_jkt, family_id, claims) do
+      {:ok,
+       %{
+         client_id: attrs.client_id,
+         redirect_uri: attrs.redirect_uri,
+         code_challenge: Map.get(attrs, :code_challenge),
+         subject: attrs.subject,
+         scope: scope,
+         dpop_jkt: dpop_jkt,
+         family_id: family_id,
+         claims: claims
+       }}
     end
+  end
+
+  # Each issue attribute is checked in a fixed precedence order; the first
+  # failure wins. Driving the checks from a list keeps the precedence
+  # explicit while holding the function's branching low.
+  defp validate_issue_attrs(attrs, scope, dpop_jkt, family_id, claims) do
+    [
+      {non_empty_binary?(Map.get(attrs, :client_id)), :invalid_client_id},
+      {non_empty_binary?(Map.get(attrs, :redirect_uri)), :invalid_redirect_uri},
+      {valid_optional_challenge?(Map.get(attrs, :code_challenge)), :invalid_code_challenge},
+      {non_empty_binary?(Map.get(attrs, :subject)), :invalid_subject},
+      {valid_scope?(scope), :invalid_scope},
+      {valid_optional_jkt?(dpop_jkt), :invalid_dpop_jkt},
+      {valid_optional_family_id?(family_id), :invalid_family_id},
+      {is_map(claims), :invalid_claims}
+    ]
+    |> Enum.find_value(:ok, fn {ok?, error} -> if ok?, do: false, else: {:error, error} end)
   end
 
   # ----- redeem validation -----
@@ -232,12 +308,24 @@ defmodule Attesto.AuthorizationCode do
 
   defp check_redirect_uri(_data, _params), do: {:error, :redirect_uri_mismatch}
 
-  defp check_pkce(%{code_challenge: challenge}, %{code_verifier: verifier}) do
+  defp check_pkce(%{code_challenge: challenge}, %{code_verifier: verifier}) when is_binary(challenge) do
     case PKCE.verify(challenge, verifier) do
       :ok -> :ok
       # Collapse every PKCE failure to one error so a redemption cannot
       # distinguish "wrong verifier" from "malformed verifier".
       {:error, _} -> {:error, :pkce_failed}
+    end
+  end
+
+  # A code issued without a challenge (the host relaxed PKCE for a confidential
+  # client - see `Attesto.AuthorizationRequest`'s `:require_pkce`) is redeemed
+  # without a verifier. Presenting a verifier against such a code is an anomaly
+  # (the client behaves as if it used PKCE when the code is unbound), so it fails
+  # closed; a challenge bound but no verifier presented likewise fails.
+  defp check_pkce(%{code_challenge: nil}, params) do
+    case Map.get(params, :code_verifier) do
+      nil -> :ok
+      _ -> {:error, :pkce_failed}
     end
   end
 
@@ -265,9 +353,18 @@ defmodule Attesto.AuthorizationCode do
   # ----- helpers -----
 
   defp non_empty_binary?(v), do: is_binary(v) and v != ""
+
+  # PKCE is optional at issuance: a host that relaxed `:require_pkce` for a
+  # confidential client issues a code with no challenge (nil). A challenge that
+  # IS present must be a valid S256 challenge (RFC 7636); nil is accepted, any
+  # other value is rejected as `:invalid_code_challenge`.
+  defp valid_optional_challenge?(nil), do: true
+  defp valid_optional_challenge?(challenge), do: PKCE.valid_challenge?(challenge)
   defp valid_scope?(scope), do: is_list(scope) and Enum.all?(scope, &Scope.valid_token?/1)
   defp valid_optional_jkt?(nil), do: true
   defp valid_optional_jkt?(jkt), do: Thumbprint.valid?(jkt)
+  defp valid_optional_family_id?(nil), do: true
+  defp valid_optional_family_id?(family_id), do: non_empty_binary?(family_id)
 
   defp unix_now(opts) do
     case Keyword.get(opts, :now) do

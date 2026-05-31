@@ -41,8 +41,18 @@ if Code.ensure_loaded?(Plug.Conn) do
         (without query/fragment) is built; default uses `conn` directly,
         which requires the scheme/host to reflect the external request
         (configure your proxy-forwarding rewrite).
+      * `:credential_from_conn` - optional fallback
+        `(conn -> {:ok, :bearer | :dpop, token} | :missing)`. Use this for
+        host-owned credential channels such as first-party cookies. The
+        standard `Authorization` header remains authoritative when present;
+        this callback is consulted only when no usable header credential is
+        present.
       * `:claims_key` - the `conn.assigns` key the verified claims are put
         under (default `:attesto_claims`).
+      * `:send_error`, `:www_authenticate`, `:no_store` - optional transport
+        hooks forwarded to `Attesto.Plug.OAuthError` so a host can keep its
+        own JSON error envelope while Attesto owns the RFC status/challenge
+        semantics.
 
         plug Attesto.Plug.Authenticate,
           config: &MyApp.Attesto.config/0,
@@ -81,35 +91,47 @@ if Code.ensure_loaded?(Plug.Conn) do
     def call(conn, opts) do
       config = resolve_config(opts)
 
-      with {:ok, scheme, token} <- authorization(conn),
+      with {:ok, scheme, token} <- authorization(conn, opts),
            {:ok, dpop_jkt} <- verify_dpop(conn, scheme, token, opts),
            {:ok, mtls_thumb} <- cert_thumbprint(conn, opts),
            {:ok, claims} <- verify_token(config, token, dpop_jkt, mtls_thumb) do
         assign(conn, Keyword.get(opts, :claims_key, @default_claims_key), claims)
       else
         :missing ->
-          OAuthError.unauthorized(conn, :bearer, "invalid_token",
-            description: "missing or malformed Authorization header"
+          OAuthError.unauthorized(
+            conn,
+            :bearer,
+            "invalid_token",
+            error_opts(opts, description: "missing or malformed Authorization header")
           )
 
         {:dpop_error, :use_dpop_nonce} ->
-          OAuthError.unauthorized(conn, :dpop, "use_dpop_nonce", dpop_nonce: issue_nonce(opts))
+          OAuthError.unauthorized(conn, :dpop, "use_dpop_nonce", error_opts(opts, dpop_nonce: issue_nonce(opts)))
 
         {:dpop_error, reason} ->
-          OAuthError.unauthorized(conn, :dpop, "invalid_dpop_proof", description: to_string(reason))
+          OAuthError.unauthorized(
+            conn,
+            :dpop,
+            "invalid_dpop_proof",
+            error_opts(opts, description: to_string(reason))
+          )
 
         {:token_error, reason} ->
-          OAuthError.unauthorized(conn, token_error_scheme(conn, reason), "invalid_token",
-            description: to_string(reason)
+          OAuthError.unauthorized(
+            conn,
+            token_error_scheme(conn, reason),
+            "invalid_token",
+            error_opts(opts, description: to_string(reason))
           )
       end
     end
 
     # ----- authorization header -----
 
-    defp authorization(conn) do
+    defp authorization(conn, opts) do
       case get_req_header(conn, "authorization") do
         [value] -> parse_authorization(value)
+        [] -> fallback_authorization(conn, opts)
         _ -> :missing
       end
     end
@@ -127,6 +149,47 @@ if Code.ensure_loaded?(Plug.Conn) do
           :missing
       end
     end
+
+    # RFC 6750 §2.2 permits bearer tokens in an application/x-www-form-urlencoded
+    # request body. Keep this as a fallback only: an Authorization header remains
+    # the primary credential channel, and GET query tokens are intentionally not
+    # accepted here.
+    defp form_body_authorization(%Plug.Conn{method: "POST", body_params: %{"access_token" => token}})
+         when is_binary(token) do
+      case String.trim(token) do
+        "" -> :missing
+        token -> {:ok, :bearer, token}
+      end
+    end
+
+    defp form_body_authorization(_conn), do: :missing
+
+    defp fallback_authorization(conn, opts) do
+      case custom_authorization(conn, opts) do
+        :missing -> form_body_authorization(conn)
+        result -> result
+      end
+    end
+
+    defp custom_authorization(conn, opts) do
+      case Keyword.get(opts, :credential_from_conn) do
+        fun when is_function(fun, 1) ->
+          normalize_custom_authorization(fun.(conn))
+
+        _ ->
+          :missing
+      end
+    end
+
+    defp normalize_custom_authorization({:ok, scheme, token}) when scheme in [:bearer, :dpop] and is_binary(token) do
+      case String.trim(token) do
+        "" -> :missing
+        token -> {:ok, scheme, token}
+      end
+    end
+
+    defp normalize_custom_authorization(:missing), do: :missing
+    defp normalize_custom_authorization(_other), do: :missing
 
     # ----- DPoP proof -----
 
@@ -270,5 +333,11 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     defp put_opt(opts, _key, nil), do: opts
     defp put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+    defp error_opts(opts, extra) do
+      opts
+      |> Keyword.take([:send_error, :www_authenticate, :no_store])
+      |> Keyword.merge(extra)
+    end
   end
 end

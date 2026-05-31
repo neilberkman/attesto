@@ -105,7 +105,7 @@ defmodule Attesto.RefreshTokenPropertyTest do
       end
     end
 
-    property "replaying any consumed generation revokes the live family" do
+    property "replaying any consumed generation after grace revokes the live family" do
       check all(chain_length <- integer(1..5), replay_index <- integer(0..4), max_runs: 60) do
         :ok = RefreshStore.ETS.reset()
         assert {:ok, issued} = RefreshToken.issue(RefreshStore.ETS, %{subject: "usr_reuse", scope: ["openid"]})
@@ -121,7 +121,9 @@ defmodule Attesto.RefreshTokenPropertyTest do
         stale = Enum.at(tokens, rem(replay_index, consumed_count))
         live = List.last(tokens)
 
-        assert {:error, :reuse_detected} = RefreshToken.rotate(RefreshStore.ETS, stale.token)
+        assert {:error, :reuse_detected} =
+                 RefreshToken.rotate(RefreshStore.ETS, stale.token, rotation_grace_seconds: 0)
+
         assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, live.token)
       end
     end

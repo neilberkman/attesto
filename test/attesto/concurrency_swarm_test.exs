@@ -32,8 +32,8 @@ defmodule Attesto.ConcurrencySwarmTest do
     |> Task.await_many(@await_ms)
   end
 
-  describe "reuse swarm: flooded rotation of an already-consumed token" do
-    test "every parallel rotation of the consumed original is :reuse_detected and revocation is idempotent" do
+  describe "reuse swarm: flooded retry of an already-consumed token" do
+    test "parallel honest retries of the consumed original return the same successor" do
       {:ok, %{token: t0}} =
         RefreshToken.issue(RefreshStore.ETS, %{subject: "usr_42", scope: ["documents.read"]})
 
@@ -42,50 +42,22 @@ defmodule Attesto.ConcurrencySwarmTest do
       assert is_binary(t1)
       refute t1 == t0
 
-      # Fire a flood of rotations of the ALREADY-CONSUMED original. Each one
-      # is a replay of a rotated token: the attack signal. The first racer
-      # reads consumed=true and revokes the whole family, which (in the ETS
-      # store) match-deletes the original's row too; racers that read after
-      # the delete see an unknown token and report :invalid_grant. So every
-      # result is one of {:reuse_detected, :invalid_grant}, and crucially
-      # NONE is {:ok}: no replay of a consumed token ever mints a successor.
-      # The repeated revoke_family/1 calls must be idempotent (no crash, the
-      # family simply stays revoked), and at least one racer must have seen
-      # the reuse signal directly.
+      # Fire a flood of rotations of the ALREADY-CONSUMED original. Within
+      # the rotation grace window this is treated as an idempotent retry of a
+      # lost response: every successful retry must receive the SAME successor
+      # that was already minted, never a distinct second successor.
       results = swarm(fn -> RefreshToken.rotate(RefreshStore.ETS, t0) end)
 
       assert length(results) == @swarm
 
-      assert Enum.all?(results, fn r ->
-               r == {:error, :reuse_detected} or r == {:error, :invalid_grant}
-             end),
-             "replaying a consumed token must never mint a successor; got #{inspect(results)}"
+      assert Enum.all?(results, &match?({:ok, _}, &1)),
+             "honest retries inside grace must be idempotent; got #{inspect(results)}"
 
-      assert Enum.any?(results, &(&1 == {:error, :reuse_detected})),
-             "at least one racer must observe the reuse signal directly"
+      successor_tokens = for {:ok, %{token: token}} <- results, do: token
+      assert Enum.uniq(successor_tokens) == [t1]
 
-      refute Enum.any?(results, &match?({:ok, _}, &1)),
-             "no replay of a consumed token may mint a successor"
-
-      # The family is revoked. revoke_family/1 in the ETS store match-deletes
-      # every row for the family_id, so the live successor t1 is gone too:
-      # rotating it now is an unknown-token :invalid_grant. Either way the
-      # successor no longer rotates - no live token survives the revocation.
-      refute match?({:ok, _}, RefreshToken.rotate(RefreshStore.ETS, t1)),
-             "the live successor must not rotate once the family is revoked"
-
-      # And the consumed original still cannot be turned into a successor:
-      # the family stays revoked under repeated pressure.
-      assert RefreshToken.rotate(RefreshStore.ETS, t0) in [
-               {:error, :reuse_detected},
-               {:error, :invalid_grant}
-             ]
-
-      # No second successor was ever minted: the only tokens that ever
-      # existed in this family are t0 (consumed/revoked) and t1 (revoked).
-      # Confirm the family carries no rotatable token at all.
-      assert RefreshStore.ETS.get(Attesto.Secret.hash(t1)) == :error,
-             "successor row must have been revoked, leaving the family forkless"
+      assert {:ok, _} = RefreshToken.rotate(RefreshStore.ETS, t1),
+             "the live successor must remain usable after idempotent retries"
     end
   end
 

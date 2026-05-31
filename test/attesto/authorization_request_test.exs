@@ -31,6 +31,13 @@ defmodule Attesto.AuthorizationRequestTest do
     AuthorizationRequest.validate(params, registered_redirect_uris: @registered)
   end
 
+  defp validate_require_nonce(params) do
+    AuthorizationRequest.validate(params,
+      registered_redirect_uris: @registered,
+      require_nonce: true
+    )
+  end
+
   describe "validate/2 success" do
     test "accepts a valid OIDC authorization-code request" do
       assert {:ok, req} = validate(base_params())
@@ -44,7 +51,8 @@ defmodule Attesto.AuthorizationRequestTest do
                state: "xyz",
                nonce: "n-0S6_WzA2Mj",
                code_challenge: @code_challenge,
-               code_challenge_method: "S256"
+               code_challenge_method: "S256",
+               claims: %{}
              } = req
     end
 
@@ -81,11 +89,23 @@ defmodule Attesto.AuthorizationRequestTest do
       assert req.acr_values == ["urn:mace:incommon:iap:silver", "phr"]
     end
 
+    test "parses optional OIDC claims request object" do
+      claims = %{
+        "userinfo" => %{
+          "name" => %{"essential" => true}
+        }
+      }
+
+      assert {:ok, req} = validate(base_params(%{"claims" => JSON.encode!(claims)}))
+      assert req.claims == claims
+    end
+
     test "defaults optional params to empty / nil when absent" do
       assert {:ok, req} = validate(base_params())
       assert req.prompt == []
       assert req.acr_values == []
       assert is_nil(req.max_age)
+      assert req.claims == %{}
     end
   end
 
@@ -142,6 +162,23 @@ defmodule Attesto.AuthorizationRequestTest do
       assert err.redirect_uri == @redirect_uri
     end
 
+    test "request_uri is explicitly rejected when unsupported" do
+      assert {:error, {:redirect, err}} =
+               validate(base_params(%{"request_uri" => "https://rp.example/request.jwt"}))
+
+      assert err.error == "request_uri_not_supported"
+      assert err.redirect_uri == @redirect_uri
+      assert err.state == "xyz"
+    end
+
+    test "request object is explicitly rejected when unsupported" do
+      assert {:error, {:redirect, err}} = validate(base_params(%{"request" => "header.body.sig"}))
+
+      assert err.error == "request_not_supported"
+      assert err.redirect_uri == @redirect_uri
+      assert err.state == "xyz"
+    end
+
     test "an out-of-ABNF scope token redirects with invalid_scope" do
       assert {:error, {:redirect, err}} = validate(base_params(%{"scope" => "open\"id"}))
       assert err.error == "invalid_scope"
@@ -196,6 +233,60 @@ defmodule Attesto.AuthorizationRequestTest do
       params = base_params(%{"response_type" => "token"}) |> Map.delete("state")
       assert {:error, {:redirect, err}} = validate(params)
       assert is_nil(err.state)
+    end
+
+    test "an unknown prompt token redirects with invalid_request (OIDC Core §3.1.2.1)" do
+      assert {:error, {:redirect, err}} = validate(base_params(%{"prompt" => "login bogus"}))
+      assert err.error == "invalid_request"
+      assert err.error_description =~ "prompt"
+    end
+
+    test "malformed claims redirects with invalid_request" do
+      assert {:error, {:redirect, err}} = validate(base_params(%{"claims" => "{not json"}))
+      assert err.error == "invalid_request"
+      assert err.error_description =~ "claims"
+    end
+
+    test "non-object claims redirects with invalid_request" do
+      assert {:error, {:redirect, err}} = validate(base_params(%{"claims" => ~s(["name"])}))
+      assert err.error == "invalid_request"
+      assert err.error_description =~ "claims"
+    end
+  end
+
+  describe "validate/2 prompt parsing (OIDC Core §3.1.2.1)" do
+    test "accepts each defined prompt value" do
+      assert {:ok, req} = validate(base_params(%{"prompt" => "none"}))
+      assert req.prompt == ["none"]
+
+      assert {:ok, req} = validate(base_params(%{"prompt" => "login consent select_account"}))
+      assert req.prompt == ["login", "consent", "select_account"]
+    end
+
+    test "absent prompt parses to an empty list" do
+      params = base_params() |> Map.delete("prompt")
+      assert {:ok, req} = validate(params)
+      assert req.prompt == []
+    end
+  end
+
+  describe "validate/2 require_nonce (OIDC Core §3.1.2.1)" do
+    test "missing nonce with require_nonce: true redirects with invalid_request" do
+      params = base_params() |> Map.delete("nonce")
+      assert {:error, {:redirect, err}} = validate_require_nonce(params)
+      assert err.error == "invalid_request"
+      assert err.error_description =~ "nonce"
+    end
+
+    test "present nonce with require_nonce: true is ok" do
+      assert {:ok, req} = validate_require_nonce(base_params(%{"nonce" => "n-0S6_WzA2Mj"}))
+      assert req.nonce == "n-0S6_WzA2Mj"
+    end
+
+    test "nonce stays optional when require_nonce is off (default)" do
+      params = base_params() |> Map.delete("nonce")
+      assert {:ok, req} = validate(params)
+      assert is_nil(req.nonce)
     end
   end
 end

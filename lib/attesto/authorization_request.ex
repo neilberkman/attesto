@@ -8,7 +8,7 @@ defmodule Attesto.AuthorizationRequest do
   `response_type`, the presence of `client_id` and `redirect_uri`, the requested
   scope (surfacing whether the OpenID Connect `openid` scope was requested), and
   the PKCE parameters (`code_challenge` + `code_challenge_method`). It carries
-  `state`, `nonce`, and the optional `prompt` / `max_age` / `acr_values`
+  `state`, `nonce`, `claims`, and the optional `prompt` / `max_age` / `acr_values`
   parameters through to the normalized result.
 
   It deliberately does NOT:
@@ -53,6 +53,18 @@ defmodule Attesto.AuthorizationRequest do
   @openid_scope "openid"
   @plain_method "plain"
 
+  # OIDC Core §3.1.2.1: the complete, fixed set of prompt values. Any token
+  # outside this set is an invalid_request.
+  @prompt_values ["none", "login", "consent", "select_account"]
+
+  @default_require_nonce false
+
+  # RFC 7636 / RFC 9700: PKCE is required by default. The caller may relax it
+  # (only ever for confidential clients; public clients MUST use PKCE per
+  # RFC 9700 §2.1.1) by passing `require_pkce: false`. Even when relaxed, a
+  # `code_challenge` that IS present is still fully enforced (S256, no `plain`).
+  @default_require_pkce true
+
   @typedoc """
   A normalized, validated authorization request.
 
@@ -68,24 +80,29 @@ defmodule Attesto.AuthorizationRequest do
           openid?: boolean(),
           state: String.t() | nil,
           nonce: String.t() | nil,
-          code_challenge: String.t(),
-          code_challenge_method: String.t(),
+          code_challenge: String.t() | nil,
+          code_challenge_method: String.t() | nil,
           prompt: [String.t()],
           max_age: non_neg_integer() | nil,
+          claims: map(),
           acr_values: [String.t()]
         }
 
+  # `code_challenge`/`code_challenge_method` are NOT enforced keys: PKCE is
+  # required by default but may be relaxed for a confidential client via the
+  # `:require_pkce` option (RFC 9700 keeps PKCE MUST only for public clients),
+  # in which case a validated request carries no challenge. They default to nil
+  # in the struct.
   @enforce_keys [
     :response_type,
     :client_id,
-    :redirect_uri,
-    :code_challenge,
-    :code_challenge_method
+    :redirect_uri
   ]
   defstruct [
     :client_id,
     :code_challenge,
     :code_challenge_method,
+    :claims,
     :max_age,
     :nonce,
     :redirect_uri,
@@ -128,6 +145,21 @@ defmodule Attesto.AuthorizationRequest do
       §3.1.2.1). An empty list rejects every request with
       `{:direct, :redirect_uri_not_registered}`.
 
+    * `:require_nonce` (optional, default `false`) - when `true`, a request with
+      no `nonce` is rejected with a redirectable `invalid_request` error (OIDC
+      Core §3.1.2.1). When `false`, `nonce` stays OPTIONAL and is carried through
+      unenforced (RFC 6749 keeps `code` at SHOULD). The host sets this per its
+      own OP policy.
+
+    * `:require_pkce` (optional, default `true`) - when `true`, a request with no
+      `code_challenge` is rejected with a redirectable `invalid_request` error
+      (RFC 7636 §4.3). When `false`, an absent `code_challenge` is permitted and
+      the validated request carries none. The caller MUST pass `false` only for a
+      confidential client: RFC 9700 §2.1.1 keeps PKCE a MUST for public clients.
+      A `code_challenge` that IS present is fully enforced (S256, no `plain`)
+      regardless of this flag - presence means the client opted into PKCE, so a
+      downgrade is always rejected.
+
   Returns `{:ok, %Attesto.AuthorizationRequest{}}` or `{:error, error()}`, where
   `error()` is classified per the moduledoc.
 
@@ -138,12 +170,14 @@ defmodule Attesto.AuthorizationRequest do
   @spec validate(map(), keyword()) :: {:ok, t()} | {:error, error()}
   def validate(params, opts) when is_map(params) and is_list(opts) do
     registered = Keyword.fetch!(opts, :registered_redirect_uris)
+    require_nonce = Keyword.get(opts, :require_nonce, @default_require_nonce)
+    require_pkce = Keyword.get(opts, :require_pkce, @default_require_pkce)
 
     with {:ok, client_id} <- validate_client_id(params),
          {:ok, redirect_uri} <- validate_redirect_uri(params, registered) do
       # From here on, redirect_uri is trusted: report further errors by
       # redirecting to it (RFC 6749 §4.1.2.1).
-      validate_redirectable(params, client_id, redirect_uri)
+      validate_redirectable(params, client_id, redirect_uri, require_nonce, require_pkce)
     end
   end
 
@@ -187,13 +221,17 @@ defmodule Attesto.AuthorizationRequest do
 
   # --- Redirectable checks (RFC 6749 §4.1.2.1) ---
 
-  defp validate_redirectable(params, client_id, redirect_uri) do
+  defp validate_redirectable(params, client_id, redirect_uri, require_nonce, require_pkce) do
     state = string_or_nil(Map.get(params, "state"))
 
-    with :ok <- validate_response_type(params, redirect_uri, state),
+    with :ok <- validate_request_object_params(params, redirect_uri, state),
+         :ok <- validate_response_type(params, redirect_uri, state),
          {:ok, scope} <- validate_scope(params, redirect_uri, state),
-         {:ok, code_challenge, method} <- validate_pkce(params, redirect_uri, state),
-         {:ok, max_age} <- validate_max_age(params, redirect_uri, state) do
+         {:ok, code_challenge, method} <- validate_pkce(params, require_pkce, redirect_uri, state),
+         {:ok, max_age} <- validate_max_age(params, redirect_uri, state),
+         {:ok, prompt} <- validate_prompt(params, redirect_uri, state),
+         {:ok, claims} <- validate_claims(params, redirect_uri, state),
+         {:ok, nonce} <- validate_nonce(params, require_nonce, redirect_uri, state) do
       {:ok,
        %__MODULE__{
          response_type: @response_type_code,
@@ -202,13 +240,43 @@ defmodule Attesto.AuthorizationRequest do
          scope: scope,
          openid?: @openid_scope in scope,
          state: state,
-         nonce: string_or_nil(Map.get(params, "nonce")),
+         nonce: nonce,
          code_challenge: code_challenge,
          code_challenge_method: method,
-         prompt: parse_space_list(Map.get(params, "prompt")),
+         prompt: prompt,
          max_age: max_age,
+         claims: claims,
          acr_values: parse_space_list(Map.get(params, "acr_values"))
        }}
+    end
+  end
+
+  # OpenID Connect Core §6 / §3.1.2.6: this implementation advertises both
+  # `request_parameter_supported: false` and `request_uri_parameter_supported:
+  # false`. If either parameter is supplied, reject it explicitly rather than
+  # ignoring it and issuing a code from the outer parameters.
+  defp validate_request_object_params(params, redirect_uri, state) do
+    cond do
+      present?(Map.get(params, "request_uri")) ->
+        {:error,
+         redirect_error(
+           "request_uri_not_supported",
+           "request_uri parameter is not supported",
+           redirect_uri,
+           state
+         )}
+
+      present?(Map.get(params, "request")) ->
+        {:error,
+         redirect_error(
+           "request_not_supported",
+           "request parameter is not supported",
+           redirect_uri,
+           state
+         )}
+
+      true ->
+        :ok
     end
   end
 
@@ -265,15 +333,26 @@ defmodule Attesto.AuthorizationRequest do
     end
   end
 
-  # RFC 7636 §4.3: code_challenge is REQUIRED and code_challenge_method must be
-  # "S256". A missing/malformed challenge or the "plain" method is rejected as
-  # "invalid_request" (RFC 7636 §4.4.1, OAuth 2.0 Security BCP). "plain" is
-  # matched explicitly so the host can see the downgrade attempt.
-  defp validate_pkce(params, redirect_uri, state) do
+  # RFC 7636 §4.3 / RFC 9700: code_challenge is REQUIRED by default and
+  # code_challenge_method must be "S256". A missing/malformed challenge or the
+  # "plain" method is rejected as "invalid_request" (RFC 7636 §4.4.1, OAuth 2.0
+  # Security BCP); "plain" is matched explicitly so the host can see the
+  # downgrade attempt.
+  #
+  # When the caller relaxes the requirement (`require_pkce: false`, only ever
+  # for a confidential client - public clients MUST use PKCE per RFC 9700
+  # §2.1.1), a wholly absent `code_challenge` is permitted and the request
+  # carries none (`{:ok, nil, nil}`). A challenge that IS present is still fully
+  # enforced regardless of the flag: presence implies the client opted into
+  # PKCE, so a downgrade or non-S256 method is always rejected.
+  defp validate_pkce(params, require_pkce, redirect_uri, state) do
     challenge = Map.get(params, "code_challenge")
     method = Map.get(params, "code_challenge_method")
 
     cond do
+      is_nil(challenge) and not require_pkce ->
+        {:ok, nil, nil}
+
       not PKCE.valid_challenge?(challenge) ->
         {:error,
          redirect_error(
@@ -337,6 +416,70 @@ defmodule Attesto.AuthorizationRequest do
     )
   end
 
+  # OIDC Core §3.1.2.1: prompt is OPTIONAL and a space-delimited list whose
+  # values are drawn from the fixed set {none, login, consent, select_account}.
+  # An unknown token is "invalid_request" (OIDC Core §3.1.2.1). The parsed list
+  # is exposed for the controller, which enforces semantics such as prompt=none
+  # (the OP MUST NOT show UI); this module does not act on the values.
+  defp validate_prompt(params, redirect_uri, state) do
+    tokens = parse_space_list(Map.get(params, "prompt"))
+
+    if Enum.all?(tokens, &(&1 in @prompt_values)) do
+      {:ok, tokens}
+    else
+      {:error,
+       redirect_error(
+         "invalid_request",
+         "prompt contains an unknown value",
+         redirect_uri,
+         state
+       )}
+    end
+  end
+
+  # OIDC Core §5.5: `claims` is OPTIONAL and, when present, is a JSON object.
+  # The engine treats it as opaque request context and leaves claim-release
+  # policy to the host/UserInfo layer; malformed JSON or a non-object value is
+  # a redirectable invalid_request.
+  defp validate_claims(params, redirect_uri, state) do
+    case Map.get(params, "claims") do
+      nil ->
+        {:ok, %{}}
+
+      value when is_binary(value) ->
+        case JSON.decode(value) do
+          {:ok, claims} when is_map(claims) ->
+            {:ok, claims}
+
+          _ ->
+            {:error, redirect_error("invalid_request", "claims must be a JSON object", redirect_uri, state)}
+        end
+
+      _ ->
+        {:error, redirect_error("invalid_request", "claims must be a JSON object", redirect_uri, state)}
+    end
+  end
+
+  # OIDC Core §3.1.2.1: nonce is OPTIONAL for the code flow (RFC 6749 stays at
+  # SHOULD), but REQUIRED when the OP policy demands it. The caller signals that
+  # policy via require_nonce; a missing nonce under that policy is the
+  # redirectable "invalid_request" error (OIDC Core §3.1.2.1).
+  defp validate_nonce(params, require_nonce, redirect_uri, state) do
+    case {string_or_nil(Map.get(params, "nonce")), require_nonce} do
+      {nil, true} ->
+        {:error,
+         redirect_error(
+           "invalid_request",
+           "nonce is required",
+           redirect_uri,
+           state
+         )}
+
+      {nonce, _} ->
+        {:ok, nonce}
+    end
+  end
+
   defp redirect_error(code, description, redirect_uri, state) do
     {:redirect,
      %{
@@ -350,6 +493,9 @@ defmodule Attesto.AuthorizationRequest do
   # OIDC Core §3.1.2.1 defines prompt and acr_values as space-delimited lists.
   defp parse_space_list(value) when is_binary(value), do: String.split(value, " ", trim: true)
   defp parse_space_list(_), do: []
+
+  defp present?(value) when is_binary(value) and value != "", do: true
+  defp present?(_), do: false
 
   defp string_or_nil(value) when is_binary(value) and value != "", do: value
   defp string_or_nil(_), do: nil

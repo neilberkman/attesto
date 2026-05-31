@@ -11,7 +11,7 @@ defmodule Attesto.MixProject do
   alias Attesto.Plug.OAuthError
   alias Attesto.Plug.RequireScopes
 
-  @version "0.5.1"
+  @version "0.6.0"
   @url "https://github.com/neilberkman/attesto"
   @maintainers ["Neil Berkman"]
 

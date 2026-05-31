@@ -9,10 +9,20 @@ defmodule Attesto.AuthorizationCode.Grant do
   `scope`, `dpop_jkt` (when present) becomes the access token's `cnf.jkt`,
   and `claims` carries any host context that rode along from the
   authorization request.
+
+  ## `family_id`
+
+  When the authorization request supplied a `:family_id` to
+  `Attesto.AuthorizationCode.issue/3`, it rides through to this struct so
+  the host can mint the refresh-token family with that id. Linking the
+  code to the family it spawns is what lets code-reuse detection revoke the
+  right descendants (OAuth 2.0 Security BCP §4.13): a store that tracks
+  reuse records this `family_id` at redemption and replays it if the code
+  is presented again. `nil` when no family id was supplied.
   """
 
   @enforce_keys [:client_id, :redirect_uri, :subject]
-  defstruct [:client_id, :redirect_uri, :subject, :dpop_jkt, scope: [], claims: %{}]
+  defstruct [:client_id, :redirect_uri, :subject, :dpop_jkt, :family_id, scope: [], claims: %{}]
 
   @type t :: %__MODULE__{
           client_id: String.t(),
@@ -20,6 +30,7 @@ defmodule Attesto.AuthorizationCode.Grant do
           subject: String.t(),
           scope: [String.t()],
           dpop_jkt: String.t() | nil,
+          family_id: String.t() | nil,
           claims: map()
         }
 
@@ -32,6 +43,7 @@ defmodule Attesto.AuthorizationCode.Grant do
       subject: data.subject,
       scope: Map.get(data, :scope, []),
       dpop_jkt: Map.get(data, :dpop_jkt),
+      family_id: Map.get(data, :family_id),
       claims: Map.get(data, :claims, %{})
     }
   end

@@ -68,13 +68,6 @@ defmodule Attesto.Token do
 
   @jti_byte_length 16
 
-  # A single JWS compact segment: the base64url alphabet (RFC 4648 §5) with
-  # no padding. Empty is permitted here so an unsecured (`alg: none`) token -
-  # whose signature segment is empty - falls through to the signature check
-  # and is classified precisely as `:invalid_signature` rather than swallowed
-  # as a generic structural error. Any `=` or out-of-alphabet byte fails.
-  @base64url_segment ~r/\A[A-Za-z0-9_-]*\z/
-
   # Modest tolerance for a verifier clock running slightly ahead of the
   # issuer's, applied to the `nbf` (not-before) and future-`iat` checks.
   @clock_skew_seconds 60
@@ -467,27 +460,44 @@ defmodule Attesto.Token do
     end
   end
 
-  # RFC 7515 §2/§7.1: a JWS compact serialization is three base64url-no-pad
-  # segments joined by ".". Attesto verifies only this canonical form,
-  # rejecting any "=" padding or non-base64url-alphabet byte (`+`, `/`,
-  # whitespace, control) in any segment at its own boundary BEFORE handing
-  # the token to JOSE. JOSE's decoder is tolerant - it strips trailing "="
-  # and normalises a non-canonical serialization into a verifiable one - so
-  # without this guard `header.payload==.sig` would verify against a signing
-  # input the issuer never emitted. A protocol engine must refuse that
-  # ambiguity rather than canonicalise around it; a host that needs to
-  # tolerate sloppy upstream encodings can canonicalise in an adapter
-  # outside core verification. Collapses to the same opaque `:invalid_token`
-  # as every other structural failure so callers cannot fingerprint it.
+  # RFC 7515 §2/§7.1 + RFC 4648 §3.5/§5: a JWS compact serialization is
+  # three base64url-no-pad segments joined by ".". Attesto verifies only the
+  # *canonical* form at its own boundary BEFORE handing the token to JOSE.
+  # JOSE's decoder is tolerant - it strips trailing "=" and normalises a
+  # non-canonical serialization into a verifiable one - so without this guard
+  # `header.payload==.sig` would verify against a signing input the issuer
+  # never emitted. An alphabet-only check is not enough: the last character
+  # of a partial-quantum segment (length not a multiple of 4) carries unused
+  # low-order bits, and several distinct characters share the same
+  # significant bits and so decode to the *same* bytes (RFC 4648 §3.5). The
+  # 342-byte RS256 signature segment is exactly such a partial quantum
+  # (342 rem 4 == 2): swapping its final character for a same-decoding
+  # sibling yields a different string JOSE decodes to the issuer's signature
+  # and accepts - a signature-malleability bypass. We close it by requiring
+  # each segment to round-trip through Base.url_decode64/encode64
+  # byte-identically, rejecting "=" padding, non-alphabet bytes, AND non-zero
+  # unused trailing bits in one check. The empty signature segment of an
+  # unsecured `alg:none` token round-trips ("" -> <<>> -> ""), so it still
+  # falls through to the signature check and is classified there as
+  # `:invalid_signature` rather than swallowed as a generic structural error.
+  # Collapses to the same opaque `:invalid_token` as every other structural
+  # failure so callers cannot fingerprint it.
   defp check_compact_form(jwt) do
     case String.split(jwt, ".") do
       [_, _, _] = segments ->
-        if Enum.all?(segments, &Regex.match?(@base64url_segment, &1)),
+        if Enum.all?(segments, &canonical_base64url?/1),
           do: :ok,
           else: {:error, :invalid_token}
 
       _ ->
         {:error, :invalid_token}
+    end
+  end
+
+  defp canonical_base64url?(segment) do
+    case Base.url_decode64(segment, padding: false) do
+      {:ok, decoded} -> Base.url_encode64(decoded, padding: false) == segment
+      :error -> false
     end
   end
 

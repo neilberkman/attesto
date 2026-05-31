@@ -16,6 +16,17 @@ defmodule Attesto.Plug.AuthenticateTest do
 
   @uri "https://api.example.com/x"
 
+  defmodule ErrorTransport do
+    @moduledoc false
+
+    def send_error(conn, status, body) do
+      conn
+      |> Plug.Conn.put_resp_content_type("application/vnd.attesto-test+json")
+      |> Plug.Conn.send_resp(status, JSON.encode!(%{"wrapped" => body}))
+      |> Plug.Conn.halt()
+    end
+  end
+
   setup do
     pem = Factory.rsa_pem()
     {:ok, config: Factory.config(pem), pem: pem}
@@ -67,6 +78,56 @@ defmodule Attesto.Plug.AuthenticateTest do
       assert conn.assigns.who["sub"] == "oc_abc123"
     end
 
+    test "accepts a form-body access_token on POST when no Authorization header is present",
+         %{config: config} do
+      {:ok, %{access_token: token}} = Token.mint(config, client_principal())
+
+      conn =
+        :post
+        |> conn(@uri, %{"access_token" => token})
+        |> Authenticate.call(Authenticate.init(config: config))
+
+      refute conn.halted
+      assert conn.assigns.attesto_claims["sub"] == "oc_abc123"
+    end
+
+    test "accepts a host-provided fallback credential when no Authorization header is present",
+         %{config: config} do
+      {:ok, %{access_token: token}} = Token.mint(config, client_principal())
+
+      conn =
+        []
+        |> request()
+        |> Authenticate.call(
+          Authenticate.init(
+            config: config,
+            credential_from_conn: fn _conn -> {:ok, :bearer, token} end
+          )
+        )
+
+      refute conn.halted
+      assert conn.assigns.attesto_claims["sub"] == "oc_abc123"
+    end
+
+    test "Authorization header takes precedence over a host-provided fallback credential",
+         %{config: config} do
+      {:ok, %{access_token: header_token}} = Token.mint(config, client_principal())
+      {:ok, %{access_token: fallback_token}} = Token.mint(config, client_principal(%{sub: "oc_other"}))
+
+      conn =
+        [{"authorization", "Bearer " <> header_token}]
+        |> request()
+        |> Authenticate.call(
+          Authenticate.init(
+            config: config,
+            credential_from_conn: fn _conn -> {:ok, :bearer, fallback_token} end
+          )
+        )
+
+      refute conn.halted
+      assert conn.assigns.attesto_claims["sub"] == "oc_abc123"
+    end
+
     test "a missing Authorization header is 401 invalid_token with a Bearer challenge",
          %{config: config} do
       conn =
@@ -80,6 +141,25 @@ defmodule Attesto.Plug.AuthenticateTest do
       assert String.starts_with?(challenge, "Bearer ")
       assert challenge =~ ~s(error="invalid_token")
       assert JSON.decode!(conn.resp_body)["error"] == "invalid_token"
+    end
+
+    test "uses custom error transport while preserving the challenge", %{config: config} do
+      conn =
+        []
+        |> request()
+        |> Authenticate.call(Authenticate.init(config: config, send_error: {ErrorTransport, :send_error}))
+
+      assert conn.status == 401
+      assert conn.halted
+      assert [challenge] = Plug.Conn.get_resp_header(conn, "www-authenticate")
+      assert String.starts_with?(challenge, "Bearer ")
+
+      assert JSON.decode!(conn.resp_body) == %{
+               "wrapped" => %{
+                 "error" => "invalid_token",
+                 "error_description" => "missing or malformed Authorization header"
+               }
+             }
     end
 
     test "a garbage Authorization header is 401 invalid_token", %{config: config} do

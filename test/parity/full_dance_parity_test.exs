@@ -22,8 +22,8 @@ defmodule Attesto.Parity.FullDanceParityTest do
   #      verifier) check its signature and decode its claims, agreeing with
   #      Attesto's own verifier on the load-bearing claims.
   #   5. Refresh rotation: Attesto issues a refresh token, rotates it once
-  #      (successor is generation 1), and a replay of the original trips
-  #      `:reuse_detected` and revokes the family.
+  #      (successor is generation 1), and a replay outside the idempotency
+  #      window trips `:reuse_detected` and revokes the family.
   #   6. DPoP: Python (joserfc, ES256) builds a DPoP proof; Attesto's
   #      `verify_proof/2` accepts it and the verified `jkt` equals Python's
   #      own RFC 7638 thumbprint of the proof key.
@@ -167,7 +167,8 @@ defmodule Attesto.Parity.FullDanceParityTest do
       end
 
       # ----- 5. Refresh token: issue, rotate once (successor is generation
-      # 1), then replay the original -> :reuse_detected. -----
+      # 1), then replay the original outside the idempotency window ->
+      # :reuse_detected. -----
       assert {:ok, issued} =
                RefreshToken.issue(RefreshStore.ETS, %{
                  subject: grant.subject,
@@ -186,10 +187,13 @@ defmodule Attesto.Parity.FullDanceParityTest do
       assert rotated.context.scope == grant.scope
       assert rotated.token != issued.token
 
-      # Replaying the original (already-rotated) token is the captured-token
-      # signal: the whole family is revoked.
+      # Replaying the original outside the short idempotency window is the
+      # captured-token signal: the whole family is revoked.
       assert {:error, :reuse_detected} =
-               RefreshToken.rotate(RefreshStore.ETS, issued.token, client_id: client_id)
+               RefreshToken.rotate(RefreshStore.ETS, issued.token,
+                 client_id: client_id,
+                 rotation_grace_seconds: 0
+               )
 
       # Family revocation means the previously-valid successor is dead too.
       assert {:error, :invalid_grant} =

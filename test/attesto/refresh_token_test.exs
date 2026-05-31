@@ -97,11 +97,15 @@ defmodule Attesto.RefreshTokenTest do
       assert ctx.client_id == "oc_app"
     end
 
-    test "the old token cannot rotate again once consumed (reuse detection)" do
+    test "an immediate honest retry of the old token returns the same successor" do
       {:ok, %{token: t0}} = RefreshToken.issue(RefreshStore.ETS, context())
-      {:ok, _} = RefreshToken.rotate(RefreshStore.ETS, t0)
+      {:ok, first} = RefreshToken.rotate(RefreshStore.ETS, t0)
 
-      assert {:error, :reuse_detected} = RefreshToken.rotate(RefreshStore.ETS, t0)
+      assert {:ok, retry} = RefreshToken.rotate(RefreshStore.ETS, t0)
+      assert retry.token == first.token
+      assert retry.family_id == first.family_id
+      assert retry.generation == first.generation
+      assert retry.context == first.context
     end
 
     test "an unknown token is invalid_grant" do
@@ -133,31 +137,54 @@ defmodule Attesto.RefreshTokenTest do
   end
 
   describe "rotate/3 reuse detection and family revocation" do
-    test "after one rotation, replaying the original -> :reuse_detected AND the live successor then -> :invalid_grant" do
+    test "strict mode keeps immediate replay as reuse detection" do
       {:ok, %{token: t0}} = RefreshToken.issue(RefreshStore.ETS, context())
       {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0)
 
-      # Replay the consumed original: reuse detected.
-      assert {:error, :reuse_detected} = RefreshToken.rotate(RefreshStore.ETS, t0)
+      assert {:error, :reuse_detected} =
+               RefreshToken.rotate(RefreshStore.ETS, t0, rotation_grace_seconds: 0)
 
       # The whole family was revoked, so the live successor no longer exists.
       assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t1)
     end
 
-    test "after reuse on ANY generation, the WHOLE family dies" do
+    test "after the grace window, replaying an old generation revokes the whole family" do
       {:ok, %{token: t0}} = RefreshToken.issue(RefreshStore.ETS, context())
-      {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0)
-      {:ok, %{token: t2}} = RefreshToken.rotate(RefreshStore.ETS, t1)
-      {:ok, %{token: t3}} = RefreshToken.rotate(RefreshStore.ETS, t2)
+      {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0, now: 1_000)
+      {:ok, %{token: t2}} = RefreshToken.rotate(RefreshStore.ETS, t1, now: 1_001)
+      {:ok, %{token: t3}} = RefreshToken.rotate(RefreshStore.ETS, t2, now: 1_002)
 
       # Replay a stale mid-chain token (t1, already consumed by the t1->t2 rotation).
-      assert {:error, :reuse_detected} = RefreshToken.rotate(RefreshStore.ETS, t1)
+      assert {:error, :reuse_detected} =
+               RefreshToken.rotate(RefreshStore.ETS, t1, now: 1_100)
 
       # Every token in the family is now gone, including the live leaf t3
       # and the already-consumed earlier generations.
       assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t3)
       assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t2)
       assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t0)
+    end
+
+    test "a consumed-token retry with a different client revokes the family" do
+      {:ok, %{token: t0}} = RefreshToken.issue(RefreshStore.ETS, context(%{client_id: "client-a"}))
+      {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0, client_id: "client-a")
+
+      assert {:error, :reuse_detected} =
+               RefreshToken.rotate(RefreshStore.ETS, t0, client_id: "client-b")
+
+      assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t1, client_id: "client-a")
+    end
+
+    test "a consumed-token retry with a different requested scope revokes the family" do
+      {:ok, %{token: t0}} =
+        RefreshToken.issue(RefreshStore.ETS, context(%{scope: ["documents.read", "documents.write"]}))
+
+      {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0, scope: ["documents.read"])
+
+      assert {:error, :reuse_detected} =
+               RefreshToken.rotate(RefreshStore.ETS, t0, scope: ["documents.write"])
+
+      assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t1)
     end
   end
 
