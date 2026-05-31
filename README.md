@@ -38,9 +38,9 @@ them to a sender, and validates proofs and scopes. You bring the principals,
 the keys, and the policy. It carries no opinion about your identity provider,
 your web layer, or your persistence.
 
-If you want Phoenix authorization-server plumbing instead of protocol
-primitives, use [`attesto_phoenix`](https://github.com/neilberkman/attesto_phoenix)
-on top of this package.
+If you want a batteries-included Phoenix authorization server, use
+[`attesto_phoenix`](https://github.com/neilberkman/attesto_phoenix) on top of
+this package: endpoints, router helpers, and Ecto-backed stores wired together.
 
 ## Contents
 
