@@ -9,10 +9,6 @@
 
 A vendor-neutral [OAuth 2.0](https://oauth.net/2/) / [OpenID Connect](https://openid.net/developers/how-connect-works/) engine for Elixir, with first-class support for sender-constrained access tokens: [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) and mutual TLS.
 
-Attesto is the engine, not the framework. It mints and verifies JWTs, binds them to a sender, and validates proofs and scopes. You bring the principals, the keys, and the policy. It carries no opinion about your identity provider, your web layer, or your persistence.
-
-If you want Phoenix authorization-server plumbing instead of protocol primitives, use [`attesto_phoenix`](https://github.com/neilberkman/attesto_phoenix) on top of this package.
-
 ## Where it fits
 
 Most Elixir authentication libraries focus on the application session: signing
@@ -36,6 +32,15 @@ This is different from session-oriented libraries such as Ueberauth, Assent,
 Pow, AshAuthentication, or `mix phx.gen.auth`: those help your application
 authenticate users. Attesto helps your application issue or verify OAuth/OIDC
 tokens.
+
+Attesto is the engine, not the framework. It mints and verifies JWTs, binds
+them to a sender, and validates proofs and scopes. You bring the principals,
+the keys, and the policy. It carries no opinion about your identity provider,
+your web layer, or your persistence.
+
+If you want Phoenix authorization-server plumbing instead of protocol
+primitives, use [`attesto_phoenix`](https://github.com/neilberkman/attesto_phoenix)
+on top of this package.
 
 ## Contents
 
