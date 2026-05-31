@@ -40,7 +40,7 @@ defmodule Attesto.MixProject do
   end
 
   def cli do
-    [preferred_envs: [precommit: :test]]
+    [preferred_envs: [precommit: :test, check: :test]]
   end
 
   def application do
@@ -80,6 +80,17 @@ defmodule Attesto.MixProject do
         "compile --warnings-as-errors",
         "credo --strict",
         "test"
+      ],
+      # Developer-facing local gate. Runs the full suite -- including the
+      # ExUnitProperties `property` cases in test/attesto/property_test.exs,
+      # which run as part of `mix test` because they are not behind a
+      # `:property` tag/filter. Mirrors `precommit` but is named for the
+      # day-to-day "did I break anything?" loop rather than CI.
+      check: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "test",
+        "credo --strict"
       ]
     ]
   end
@@ -95,7 +106,7 @@ defmodule Attesto.MixProject do
         License: ~r/LICENSE/
       ],
       groups_for_modules: [
-        Core: [Attesto.Token, Attesto.Config, Attesto.PrincipalKind],
+        Core: [Attesto.Token, Attesto.IDToken, Attesto.Config, Attesto.PrincipalKind],
         Grants: [
           Attesto.PKCE,
           Attesto.AuthorizationCode,

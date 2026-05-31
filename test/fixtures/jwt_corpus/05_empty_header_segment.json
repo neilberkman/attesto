@@ -1,0 +1,1 @@
+{"attack_vector":"empty protected-header segment","expected_error":"invalid_token","name":"05_empty_header_segment","notes":"an empty header cannot decode to a JSON object with an alg"}

@@ -1,0 +1,1 @@
+{"attack_vector":"protected header JSON is a string literal, not an object","expected_error":"invalid_token","name":"10_header_json_string_not_object","notes":"peek_protected must reach a {alg,...} object or the token is invalid"}

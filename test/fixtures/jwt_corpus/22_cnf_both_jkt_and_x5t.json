@@ -1,0 +1,1 @@
+{"attack_vector":"cnf carries both jkt (DPoP) and x5t#S256 (mTLS)","expected_error":"unsupported_confirmation","name":"22_cnf_both_jkt_and_x5t","notes":"a cnf must be exactly one known binding member"}

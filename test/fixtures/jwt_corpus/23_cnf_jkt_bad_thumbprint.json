@@ -1,0 +1,1 @@
+{"attack_vector":"cnf.jkt is not a canonical 43-char base64url thumbprint","expected_error":"unsupported_confirmation","name":"23_cnf_jkt_bad_thumbprint","notes":"a non-canonical jkt could never be matched by a real proof; reject it"}

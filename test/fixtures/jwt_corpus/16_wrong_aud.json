@@ -1,0 +1,1 @@
+{"attack_vector":"aud names a different audience","expected_error":"invalid_audience","name":"16_wrong_aud","notes":"RFC 7519 §4.1.3: aud must equal (or contain) the configured audience"}

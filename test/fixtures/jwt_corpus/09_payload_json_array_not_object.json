@@ -1,0 +1,1 @@
+{"attack_vector":"payload JSON is an array rather than a claims object","expected_error":"invalid_token","name":"09_payload_json_array_not_object","notes":"claims must be a JSON object; a top-level array is not a valid payload"}

@@ -1,0 +1,1 @@
+{"attack_vector":"cnf is a bare string rather than a map","expected_error":"unsupported_confirmation","name":"24_cnf_not_a_map","notes":"cnf must be an object holding a known binding member"}

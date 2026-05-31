@@ -1,0 +1,1 @@
+{"attack_vector":"principal_kind names a kind not configured","expected_error":"invalid_principal","name":"20_unknown_principal_kind","notes":"the kind claim must name a configured PrincipalKind"}

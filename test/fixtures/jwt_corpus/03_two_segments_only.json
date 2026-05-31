@@ -1,0 +1,1 @@
+{"attack_vector":"compact serialization truncated to two segments (header.payload)","expected_error":"invalid_token","name":"03_two_segments_only","notes":"a compact JWS is exactly three dot-separated segments"}

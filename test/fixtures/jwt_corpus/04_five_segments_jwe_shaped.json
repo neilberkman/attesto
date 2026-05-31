@@ -1,0 +1,1 @@
+{"attack_vector":"five segments (JWE compact shape) handed to a JWS verifier","expected_error":"invalid_token","name":"04_five_segments_jwe_shaped","notes":"Attesto verifies JWS only; a 5-part token is not a signed access token"}

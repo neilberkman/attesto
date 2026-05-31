@@ -1,0 +1,1 @@
+{"attack_vector":"iss claim absent","expected_error":"invalid_issuer","name":"15_missing_iss","notes":"a token with no issuer can never match the configured issuer"}

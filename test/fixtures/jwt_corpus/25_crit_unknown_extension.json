@@ -1,0 +1,1 @@
+{"attack_vector":"protected header lists an unknown extension in crit","expected_error":"unsupported_critical_header","name":"25_crit_unknown_extension","notes":"RFC 7515 §4.1.11: an unprocessed crit member must force rejection"}

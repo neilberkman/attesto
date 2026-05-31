@@ -1,0 +1,1 @@
+{"attack_vector":"nbf present but a string rather than an integer","expected_error":"invalid_claims","name":"14_nbf_non_integer","notes":"a present nbf must be an integer (RFC 7519 §4.1.5)"}

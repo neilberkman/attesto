@@ -64,12 +64,56 @@ def generate_pkce_pair():
     return (verifier, challenge)
 
 
+def compute_oidc_hash(value):
+    """Compute an OIDC Core §3.1.3.6 / §3.3.2.11 hash claim (`at_hash`,
+    `c_hash`) the way the spec prescribes for an RS256 ID Token: hash the
+    ASCII octets of `value` with SHA-256 (the hash of the token's signing
+    algorithm), take the left-most half of that digest (128 bits / 16 bytes
+    for SHA-256), and base64url-encode without padding. Returns plain str.
+
+    This shares no code with Attesto's Elixir `hash_claim/1`, so agreement
+    is a genuine cross-implementation check of the half-digest construction
+    (the off-by-one trap is taking the full digest, or the wrong half)."""
+    digest = hashlib.sha256(_s(value).encode("ascii")).digest()
+    left_most_half = digest[: len(digest) // 2]
+    return _b64url_nopad(left_most_half)
+
+
+def verify_id_token_c_hash(code, expected_c_hash):
+    """Independently verify the `c_hash` claim of an Attesto-minted ID Token
+    (OIDC Core §3.3.2.11). `code` is the authorization code the ID Token was
+    bound to; `expected_c_hash` is the `c_hash` claim Attesto emitted.
+
+    Recomputes `c_hash` from `code` here in Python via `compute_oidc_hash`
+    and asserts it matches what Attesto produced, mirroring the `at_hash`
+    parity assertion in cross_language_parity_test.exs. Raises `ValueError`
+    on a mismatch (surfacing to Elixir as a test error); returns `True` on
+    agreement so the Elixir side can assert a plain truthy result."""
+    computed = compute_oidc_hash(code)
+    expected = _s(expected_c_hash)
+    if computed != expected:
+        raise ValueError("c_hash mismatch: %r != %r" % (computed, expected))
+    return True
+
+
 def joserfc_verify_rs256(token, public_pem):
     """Verify an RS256 JWT with joserfc against an RSA public PEM and
     return the decoded claims as a plain dict."""
     key = RSAKey.import_key(_s(public_pem))
     decoded = jose_jwt.decode(_s(token), key, algorithms=["RS256"])
     return dict(decoded.claims)
+
+
+def build_rs256_jwt(claims, private_pem, typ="JWT"):
+    """Sign a compact RS256 JWT with joserfc using the supplied RSA private
+    PEM. Used for inbound parity: Python emits the wire object, Attesto
+    verifies it. `typ=None` omits the header member."""
+    key = RSAKey.import_key(_s(private_pem))
+    header = {"alg": "RS256", "kid": key.thumbprint()}
+    typ = _s(typ)
+    if typ is not None:
+        header["typ"] = typ
+    return jose_jwt.encode(header, _s(claims), key, algorithms=["RS256"])
 
 
 def cryptography_verify_rs256(token, public_pem, issuer, audience):

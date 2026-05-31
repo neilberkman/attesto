@@ -1,0 +1,1 @@
+{"attack_vector":"exp == now (verified at now): the strict exp > now boundary","expected_error":"expired","name":"11_exp_at_now_boundary","notes":"RFC 7519 §4.1.4 with no skew leeway: exp must be strictly after now"}

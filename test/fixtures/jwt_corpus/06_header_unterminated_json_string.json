@@ -1,0 +1,1 @@
+{"attack_vector":"protected header is an unterminated JSON string","expected_error":"invalid_token","name":"06_header_unterminated_json_string","notes":"header must JSON-decode to an object before any key selection"}

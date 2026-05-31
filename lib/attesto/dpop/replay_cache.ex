@@ -114,15 +114,20 @@ defmodule Attesto.DPoP.ReplayCache do
       false ->
         now_ms = monotonic_ms()
 
-        case :ets.lookup(@table, jti) do
-          [{^jti, prior_expires_ms}] when prior_expires_ms < now_ms ->
-            # Expired entry not yet swept - replace it and accept.
-            true = :ets.insert(@table, {jti, expires_at_ms})
-            :ok
+        replace_expired(jti, now_ms, expires_at_ms)
+    end
+  end
 
-          _ ->
-            {:error, :replay}
+  defp replace_expired(jti, now_ms, expires_at_ms) do
+    case :ets.select_delete(@table, [{{jti, :"$1"}, [{:<, :"$1", now_ms}], [true]}]) do
+      1 ->
+        case :ets.insert_new(@table, {jti, expires_at_ms}) do
+          true -> :ok
+          false -> {:error, :replay}
         end
+
+      0 ->
+        {:error, :replay}
     end
   end
 

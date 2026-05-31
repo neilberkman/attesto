@@ -1,0 +1,1 @@
+{"attack_vector":"header segment contains '+' and '/' (standard base64, not base64url)","expected_error":"invalid_token","name":"01_header_non_urlsafe_base64","notes":"RFC 7515 §2 mandates base64url; non-URL-safe alphabet must not decode"}

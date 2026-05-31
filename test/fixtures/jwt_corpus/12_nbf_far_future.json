@@ -1,0 +1,1 @@
+{"attack_vector":"nbf set 3600s in the future, far beyond the 60s skew tolerance","expected_error":"not_yet_valid","name":"12_nbf_far_future","notes":"RFC 7519 §4.1.5: a token must not be accepted before its nbf"}

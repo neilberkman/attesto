@@ -1,0 +1,1 @@
+{"attack_vector":"raw U+0001 control character embedded in the header JSON string","expected_error":"invalid_token","name":"07_header_control_char_in_json","notes":"RFC 8259 §7 forbids unescaped control characters in JSON strings"}

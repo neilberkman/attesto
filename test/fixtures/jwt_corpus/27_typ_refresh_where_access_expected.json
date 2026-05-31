@@ -1,0 +1,1 @@
+{"attack_vector":"typ=refresh verified with the default expected_typ=access","expected_error":"unexpected_typ","name":"27_typ_refresh_where_access_expected","notes":"a refresh token must not satisfy an access-token verification"}

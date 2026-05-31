@@ -68,6 +68,13 @@ defmodule Attesto.Token do
 
   @jti_byte_length 16
 
+  # A single JWS compact segment: the base64url alphabet (RFC 4648 §5) with
+  # no padding. Empty is permitted here so an unsecured (`alg: none`) token -
+  # whose signature segment is empty - falls through to the signature check
+  # and is classified precisely as `:invalid_signature` rather than swallowed
+  # as a generic structural error. Any `=` or out-of-alphabet byte fails.
+  @base64url_segment ~r/\A[A-Za-z0-9_-]*\z/
+
   # Modest tolerance for a verifier clock running slightly ahead of the
   # issuer's, applied to the `nbf` (not-before) and future-`iat` checks.
   @clock_skew_seconds 60
@@ -215,7 +222,10 @@ defmodule Attesto.Token do
 
   Runs, in order:
 
-    1. **Signature.** The compact JWS parses and its RS256 signature
+    1. **Signature.** The compact JWS is canonical - three base64url-no-pad
+       segments (Attesto rejects `=` padding or any non-base64url byte at
+       its boundary, refusing to verify a serialization the issuer never
+       emitted) - and its RS256 signature
        verifies against a key the keystore trusts, selected by the JWS
        header `kid`. A token whose `kid` names a key we do not hold, or
        whose header `alg` is anything but RS256, fails as
@@ -447,12 +457,37 @@ defmodule Attesto.Token do
   # ----- internal: verification -----
 
   defp verify_signature(config, jwt) do
-    with {:ok, header} <- peek_protected_header(jwt),
+    with :ok <- check_compact_form(jwt),
+         {:ok, header} <- peek_protected_header(jwt),
          :ok <- check_crit(header) do
       case candidate_jwks(config, Map.get(header, "kid")) do
         [] -> {:error, :invalid_signature}
         jwks -> verify_against_any(jwks, jwt)
       end
+    end
+  end
+
+  # RFC 7515 §2/§7.1: a JWS compact serialization is three base64url-no-pad
+  # segments joined by ".". Attesto verifies only this canonical form,
+  # rejecting any "=" padding or non-base64url-alphabet byte (`+`, `/`,
+  # whitespace, control) in any segment at its own boundary BEFORE handing
+  # the token to JOSE. JOSE's decoder is tolerant - it strips trailing "="
+  # and normalises a non-canonical serialization into a verifiable one - so
+  # without this guard `header.payload==.sig` would verify against a signing
+  # input the issuer never emitted. A protocol engine must refuse that
+  # ambiguity rather than canonicalise around it; a host that needs to
+  # tolerate sloppy upstream encodings can canonicalise in an adapter
+  # outside core verification. Collapses to the same opaque `:invalid_token`
+  # as every other structural failure so callers cannot fingerprint it.
+  defp check_compact_form(jwt) do
+    case String.split(jwt, ".") do
+      [_, _, _] = segments ->
+        if Enum.all?(segments, &Regex.match?(@base64url_segment, &1)),
+          do: :ok,
+          else: {:error, :invalid_token}
+
+      _ ->
+        {:error, :invalid_token}
     end
   end
 

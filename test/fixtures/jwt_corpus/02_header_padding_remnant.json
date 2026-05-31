@@ -1,0 +1,1 @@
+{"attack_vector":"header base64url segment carries a '=' padding remnant","expected_error":"invalid_token","name":"02_header_padding_remnant","notes":"base64url-no-pad: an '=' makes the protected header undecodable"}

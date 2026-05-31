@@ -1,0 +1,1 @@
+{"attack_vector":"principal_kind=client but sub carries the user (usr_) prefix","expected_error":"invalid_principal","name":"21_principal_kind_sub_prefix_mismatch","notes":"sub must carry the kind's sub_prefix; a mismatch fails verify"}

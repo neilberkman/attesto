@@ -1,0 +1,1 @@
+{"attack_vector":"jti claim absent","expected_error":"invalid_claims","name":"19_missing_jti","notes":"jti is required and must be a non-empty string (RFC 7519 §4.1.7)"}

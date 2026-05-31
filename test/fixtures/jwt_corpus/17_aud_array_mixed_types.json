@@ -1,0 +1,1 @@
+{"attack_vector":"aud is an array mixing the right string with a non-string member","expected_error":"invalid_audience","name":"17_aud_array_mixed_types","notes":"an aud array must be all strings; a mixed array is malformed, not tolerated"}
