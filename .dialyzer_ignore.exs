@@ -16,6 +16,9 @@
 #   * Attesto.IDToken.{verify_strict_against,verify_against_any,
 #     peek_protected_header} - the ID Token verifier shares the same
 #     fail-closed JOSE verify-boundary clauses as Attesto.Token.
+#   * Attesto.{ClientAssertion,RequestObject}.verify_against_any/2 - client
+#     assertions and request objects share the same fail-closed JOSE
+#     verify-boundary clause, returning OAuth/OIDC-specific opaque errors.
 #   * Attesto.Scope.parse_resource_wildcard/2 - rejects a non-binary scope
 #     rather than raising, even though callers guard is_binary upstream.
 #
@@ -28,5 +31,7 @@
   {"lib/attesto/token.ex", :pattern_match_cov},
   {"lib/attesto/id_token.ex", :pattern_match},
   {"lib/attesto/id_token.ex", :pattern_match_cov},
+  {"lib/attesto/client_assertion.ex", :pattern_match_cov},
+  {"lib/attesto/request_object.ex", :pattern_match_cov},
   {"lib/attesto/scope.ex", :pattern_match_cov}
 ]
