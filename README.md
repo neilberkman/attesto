@@ -7,12 +7,39 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/neilberkman/attesto/blob/main/LICENSE)
 [![Elixir](https://img.shields.io/badge/elixir-%E2%89%A5%201.18-purple)](https://elixir-lang.org)
 
-A vendor-neutral OAuth 2.0 / OIDC engine for Elixir, with first-class support for sender-constrained access tokens: DPoP and mutual-TLS.
+A vendor-neutral [OAuth 2.0](https://oauth.net/2/) / [OpenID Connect](https://openid.net/developers/how-connect-works/) engine for Elixir, with first-class support for sender-constrained access tokens: [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) and mutual TLS.
 
 Attesto is the engine, not the framework. It mints and verifies JWTs, binds them to a sender, and validates proofs and scopes. You bring the principals, the keys, and the policy. It carries no opinion about your identity provider, your web layer, or your persistence.
 
+If you want Phoenix authorization-server plumbing instead of protocol primitives, use [`attesto_phoenix`](https://github.com/neilberkman/attesto_phoenix) on top of this package.
+
+## Where it fits
+
+Most Elixir authentication libraries focus on the application session: signing
+in with an external provider, managing user accounts, or creating Phoenix
+session cookies. Attesto sits on the token side of the boundary.
+
+Use it when you need to:
+
+1. Verify standards-based API tokens in a resource server. Attesto verifies
+   JWT access tokens locally by signature, audience, issuer, and optional
+   sender constraint. No token database or introspection call is required for
+   the normal access-token path.
+
+2. Issue tokens from your own authorization server. Attesto provides the
+   protocol pieces: JWT access tokens, ID tokens, JWKS/key handling, DPoP,
+   mutual-TLS binding, authorization-code helpers, refresh-token rotation,
+   scope algebra, and OAuth error/challenge helpers. Transport and persistence
+   remain separate; `attesto_phoenix` supplies the Phoenix/Ecto layer.
+
+This is different from session-oriented libraries such as Ueberauth, Assent,
+Pow, AshAuthentication, or `mix phx.gen.auth`: those help your application
+authenticate users. Attesto helps your application issue or verify OAuth/OIDC
+tokens.
+
 ## Contents
 
+- [Where it fits](#where-it-fits)
 - [Why this library](#why-this-library)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -41,7 +68,7 @@ Attesto is the engine, not the framework. It mints and verifies JWTs, binds them
 ```elixir
 def deps do
   [
-    {:attesto, "~> 0.5"}
+    {:attesto, "~> 0.6"}
   ]
 end
 ```
