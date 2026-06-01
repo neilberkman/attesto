@@ -59,12 +59,18 @@ defmodule Attesto.GrantsConcurrencyTest do
 
       results = race(fn -> RefreshToken.rotate(RefreshStore.ETS, t0) end)
 
-      winners = Enum.count(results, &match?({:ok, _}, &1))
+      successors =
+        results
+        |> Enum.flat_map(fn
+          {:ok, %{token: token}} -> [token]
+          _other -> []
+        end)
+        |> Enum.uniq()
 
-      # The atomic claim guarantees at most one successful rotation. The
-      # remaining racers see the token already claimed and report reuse,
-      # which revokes the family - the conservative response to what looks
-      # like a concurrent double-use of one refresh token.
+      # The atomic claim guarantees at most one distinct successor. With the
+      # default retry grace window, losing racers may receive the same successor
+      # through the idempotent retry path; that is safe. What must never happen
+      # is a fork where two different successors are minted from one parent.
       #
       # A racer that passed the initial non-consuming `get` but whose
       # `consume` call arrives after `revoke_family` has already deleted the
@@ -72,7 +78,8 @@ defmodule Attesto.GrantsConcurrencyTest do
       # returns `:error` for an absent row). Both `:reuse_detected` and
       # `:invalid_grant` are safe terminal outcomes: neither produces a
       # successor, and the family is revoked either way.
-      assert winners <= 1, "at most one rotation may claim a token; got #{winners}"
+      assert length(successors) <= 1,
+             "at most one distinct successor may be minted; got #{length(successors)}"
 
       assert Enum.all?(results, fn r ->
                match?({:ok, _}, r) or r == {:error, :reuse_detected} or r == {:error, :invalid_grant}

@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-31
+
 ### Added
 
 - `Attesto.Test.DPoPVerifier` - a server-side DPoP verification harness for
