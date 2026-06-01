@@ -44,8 +44,10 @@ defmodule Attesto.Discovery do
     response_types_supported
     response_modes_supported
     token_endpoint_auth_methods_supported
+    token_endpoint_auth_signing_alg_values_supported
     revocation_endpoint_auth_methods_supported
     introspection_endpoint_auth_methods_supported
+    authorization_response_iss_parameter_supported
     tls_client_certificate_bound_access_tokens
     mtls_endpoint_aliases
     require_pushed_authorization_requests

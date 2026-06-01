@@ -53,12 +53,16 @@ defmodule Attesto.DiscoveryTest do
         Discovery.metadata(config(),
           authorization_endpoint: "https://auth.example.com/authorize",
           scopes_supported: ["documents.read", "documents.write"],
-          token_endpoint_auth_methods_supported: ["client_secret_basic", "none"]
+          token_endpoint_auth_methods_supported: ["client_secret_basic", "none"],
+          token_endpoint_auth_signing_alg_values_supported: ["ES256", "PS256"],
+          authorization_response_iss_parameter_supported: true
         )
 
       assert meta["authorization_endpoint"] == "https://auth.example.com/authorize"
       assert meta["scopes_supported"] == ["documents.read", "documents.write"]
       assert meta["token_endpoint_auth_methods_supported"] == ["client_secret_basic", "none"]
+      assert meta["token_endpoint_auth_signing_alg_values_supported"] == ["ES256", "PS256"]
+      assert meta["authorization_response_iss_parameter_supported"] == true
 
       # Endpoints not supplied are absent, not nil.
       refute Map.has_key?(meta, "revocation_endpoint")

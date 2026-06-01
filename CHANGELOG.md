@@ -6,6 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-06-01
+
+### Added
+
+- Allow OAuth authorization-server metadata (RFC 8414) hosts to advertise
+  `authorization_response_iss_parameter_supported` and
+  `token_endpoint_auth_signing_alg_values_supported`. These are host capability
+  declarations; Attesto still drops nil values and ignores unlisted metadata
+  keys.
+
 ## [0.6.2] - 2026-06-01
 
 ### Fixed
