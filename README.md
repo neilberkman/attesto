@@ -3,8 +3,8 @@
 [![Hex.pm](https://img.shields.io/hexpm/v/attesto)](https://hex.pm/packages/attesto)
 [![Hexdocs.pm](https://img.shields.io/badge/docs-hexdocs.pm-blue)](https://hexdocs.pm/attesto)
 [![Hex Downloads](https://img.shields.io/hexpm/dt/attesto)](https://hex.pm/packages/attesto)
-[![Elixir CI](https://github.com/neilberkman/attesto/actions/workflows/elixir.yml/badge.svg)](https://github.com/neilberkman/attesto/actions/workflows/elixir.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/neilberkman/attesto/blob/main/LICENSE)
+[![Elixir CI](https://github.com/XukuLLC/attesto/actions/workflows/elixir.yml/badge.svg)](https://github.com/XukuLLC/attesto/actions/workflows/elixir.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/XukuLLC/attesto/blob/main/LICENSE)
 [![Elixir](https://img.shields.io/badge/elixir-%E2%89%A5%201.18-purple)](https://elixir-lang.org)
 
 A vendor-neutral [OAuth 2.0](https://oauth.net/2/) / [OpenID Connect](https://openid.net/developers/how-connect-works/) engine for Elixir APIs that need modern token security, with first-class support for sender-constrained access tokens: [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) and mutual TLS.
@@ -46,7 +46,7 @@ the keys, and the policy. It carries no opinion about your identity provider,
 your web layer, or your persistence.
 
 If you want a batteries-included Phoenix authorization server, use
-[`attesto_phoenix`](https://github.com/neilberkman/attesto_phoenix) on top of
+[`attesto_phoenix`](https://github.com/XukuLLC/attesto_phoenix) on top of
 this package: endpoints, router helpers, and Ecto-backed stores wired together.
 
 ## Contents
