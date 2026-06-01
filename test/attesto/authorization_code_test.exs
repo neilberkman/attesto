@@ -318,10 +318,10 @@ defmodule Attesto.AuthorizationCodeTest do
       assert {:ok, %Grant{dpop_jkt: nil}} = AuthorizationCode.redeem(CodeStore.ETS, code, redeem_params())
     end
 
-    test "unbound code with a presented jkt is dpop_proof_unexpected", %{challenge: challenge} do
+    test "unbound code with a presented jkt redeems", %{challenge: challenge} do
       {:ok, code} = AuthorizationCode.issue(CodeStore.ETS, code_attrs(challenge))
 
-      assert {:error, :dpop_proof_unexpected} =
+      assert {:ok, %Grant{dpop_jkt: nil}} =
                AuthorizationCode.redeem(CodeStore.ETS, code, redeem_params(%{dpop_jkt: valid_jkt()}))
     end
 

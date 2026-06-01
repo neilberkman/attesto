@@ -6,6 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-06-01
+
+### Fixed
+
+- Allow an authorization code that was not pre-bound with `dpop_jkt` to be
+  redeemed at the token endpoint with a DPoP proof. Codes explicitly bound with
+  `dpop_jkt` still require the exact same proof key at redemption. This matches
+  FAPI-style DPoP flows where the authorization request does not pre-bind the
+  code, but the token endpoint proof sender-constrains the access token being
+  minted.
+
 ## [0.6.4] - 2026-06-01
 
 ### Fixed

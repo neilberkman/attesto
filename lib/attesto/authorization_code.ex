@@ -62,7 +62,10 @@ defmodule Attesto.AuthorizationCode do
   If `issue/3` is given a `:dpop_jkt`, the code is bound to that DPoP key
   (RFC 9449 §10): redemption MUST present the same `:dpop_jkt` (the
   thumbprint of the key in the token-request's DPoP proof) or it is
-  rejected. A code minted without a binding MUST be redeemed without one.
+  rejected. A code minted without a binding MAY still be redeemed with a
+  token-request DPoP proof; in that case this module treats the proof as a
+  token-endpoint sender constraint for the access token the host is about to
+  mint, not as a pre-existing authorization-code binding.
   """
 
   alias Attesto.AuthorizationCode.Grant
@@ -111,7 +114,6 @@ defmodule Attesto.AuthorizationCode do
           | :redirect_uri_mismatch
           | :pkce_failed
           | :dpop_proof_required
-          | :dpop_proof_unexpected
           | :dpop_binding_mismatch
           | {:reuse, Attesto.CodeStore.consumed_meta()}
 
@@ -165,7 +167,9 @@ defmodule Attesto.AuthorizationCode do
   being redeemed by another (RFC 6749 §4.1.3). A caller that cannot
   authenticate the client and relies on PKCE alone passes
   `allow_missing_client_id?: true` in `opts`. `:dpop_jkt` is required iff
-  the code was DPoP-bound at `issue/3`.
+  the code was DPoP-bound at `issue/3`; if the code was not bound, a presented
+  `:dpop_jkt` is allowed and can be used by the caller to mint a DPoP-bound
+  access token.
 
   The code is consumed (single use) before validation. Returns
   `{:ok, %Attesto.AuthorizationCode.Grant{}}` with the validated grant
@@ -331,8 +335,11 @@ defmodule Attesto.AuthorizationCode do
 
   defp check_pkce(_data, _params), do: {:error, :pkce_failed}
 
-  # Mirrors the token `cnf` binding matrix: a bound code requires a
-  # matching proof, an unbound code forbids one.
+  # RFC 9449 §10 lets a client bind the authorization code itself with a
+  # `dpop_jkt` authorization-request parameter. When that pre-binding exists,
+  # redemption must present the exact same proof key. If the code was not
+  # pre-bound, a DPoP proof at the token endpoint is still valid: it constrains
+  # the access token being minted, not the already-issued code.
   defp check_dpop(%{dpop_jkt: bound}, params) when is_binary(bound) do
     case Map.get(params, :dpop_jkt) do
       # Only a wholly absent proof is "required"; any present-but-wrong
@@ -343,12 +350,7 @@ defmodule Attesto.AuthorizationCode do
     end
   end
 
-  defp check_dpop(_data, params) do
-    case Map.get(params, :dpop_jkt) do
-      nil -> :ok
-      _ -> {:error, :dpop_proof_unexpected}
-    end
-  end
+  defp check_dpop(_data, _params), do: :ok
 
   # ----- helpers -----
 
