@@ -10,6 +10,8 @@ defmodule Attesto.MixProject do
   alias Attesto.Plug.Authenticate
   alias Attesto.Plug.OAuthError
   alias Attesto.Plug.RequireScopes
+  alias Attesto.Test.DPoP, as: TestDPoP
+  alias Attesto.Test.DPoPVerifier, as: TestDPoPVerifier
 
   @version "0.6.0"
   @url "https://github.com/neilberkman/attesto"
@@ -136,7 +138,8 @@ defmodule Attesto.MixProject do
           Attesto.SecureCompare,
           Attesto.Secret,
           Attesto.ClusterGuard
-        ]
+        ],
+        Testing: [TestDPoP, TestDPoPVerifier]
       ]
     ]
   end

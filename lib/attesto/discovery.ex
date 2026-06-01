@@ -69,8 +69,13 @@ defmodule Attesto.Discovery do
       `:response_modes_supported`, `:token_endpoint_auth_methods_supported`,
       `:service_documentation`, `:ui_locales_supported` - included only if
       given.
+    * `:pushed_authorization_request_endpoint` (RFC 9126),
+      `:require_pushed_authorization_requests` - the PAR endpoint URL and
+      whether the server mandates PAR; included only if given.
 
-  Any other opt key is ignored.
+  The accepted host fields are the RFC 8414 §2 allowlist in
+  `@host_fields`; the enumeration above is illustrative. Any other opt key
+  is ignored.
   """
   @spec metadata(Config.t(), keyword()) :: %{required(String.t()) => term()}
   def metadata(%Config{} = config, opts \\ []) do

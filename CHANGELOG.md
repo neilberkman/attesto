@@ -6,6 +6,38 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Attesto.Test.DPoPVerifier` - a server-side DPoP verification harness for
+  host application suites, the counterpart to `Attesto.Test.DPoP`. From a plain
+  request description (`method`, `url`, `headers`) it verifies the presented
+  DPoP proof and, when `verify_token: true`, the access token, returning
+  `{:ok, verified}` or an `{:error, challenge}` map carrying the HTTP status,
+  the `WWW-Authenticate` challenge, and an optional `DPoP-Nonce`. It does not
+  reimplement RFC 9449: it delegates every decision to the production verifiers
+  `Attesto.DPoP.verify_proof/2` and `Attesto.Token.verify/3`, and mirrors the
+  resource server's scheme handling (a DPoP-bound token presented as Bearer
+  surfaces a `DPoP` challenge, RFC 9449 §7.1; a missing required nonce surfaces
+  `use_dpop_nonce`, §8). It depends on neither Plug, Phoenix, nor any HTTP
+  client, so it runs from any ExUnit suite.
+
+- `Attesto.Test.DPoP` - DPoP test fixtures for host application suites
+  (RFC 9449). Ships under `lib/` so a consumer can call it from its
+  `test/` tree without depending on Attesto's own test support.
+  `generate_key/1` mints a proof key (EC P-256 / `ES256` by default);
+  `mint_access_token/4` mints a DPoP-sender-constrained access token bound
+  to that key via `cnf.jkt` (RFC 7800); `proof/4` builds a valid proof JWT
+  for a `(htm, htu)` pair, optionally carrying `ath` (RFC 9449 §4.3) and a
+  server `nonce` (§8); `invalid_proof/5` builds a proof with a single
+  deliberate defect (`:wrong_htm`, `:wrong_htu`, `:missing_ath`,
+  `:expired`) for negative tests. Every fixture is built through the same
+  primitives the production code uses (`Attesto.Token.mint/3`,
+  `Attesto.DPoP.compute_jkt/1`, `Attesto.DPoP.compute_ath/1`,
+  `Attesto.SigningAlg.infer/1`, `JOSE.JWS`), and embeds only the proof
+  key's public half (RFC 9449 §4.2), so a fixture is correct by
+  construction against `Attesto.DPoP.verify_proof/2` and stays in step
+  with it.
+
 ## [0.6.0]
 
 ### Added
