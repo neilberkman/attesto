@@ -38,6 +38,12 @@ defmodule Attesto.AuthorizationRequestTest do
     )
   end
 
+  defp unsigned_request_object(claims) do
+    header = Base.url_encode64(JSON.encode!(%{"alg" => "none"}), padding: false)
+    payload = Base.url_encode64(JSON.encode!(claims), padding: false)
+    header <> "." <> payload <> "."
+  end
+
   describe "validate/2 success" do
     test "accepts a valid OIDC authorization-code request" do
       assert {:ok, req} = validate(base_params())
@@ -175,6 +181,28 @@ defmodule Attesto.AuthorizationRequestTest do
       assert {:error, {:redirect, err}} = validate(base_params(%{"request" => "header.body.sig"}))
 
       assert err.error == "invalid_request_object"
+      assert err.redirect_uri == @redirect_uri
+      assert err.state == "xyz"
+    end
+
+    test "unsigned request object is rejected as unsupported" do
+      request =
+        unsigned_request_object(%{
+          "client_id" => "client-123",
+          "redirect_uri" => @redirect_uri,
+          "response_type" => "code",
+          "scope" => "openid",
+          "state" => "xyz",
+          "nonce" => "n-0S6_WzA2Mj"
+        })
+
+      assert {:error, {:redirect, err}} =
+               AuthorizationRequest.validate(base_params(%{"request" => request}),
+                 registered_redirect_uris: @registered,
+                 request_object_jwks: %{"keys" => []}
+               )
+
+      assert err.error == "request_not_supported"
       assert err.redirect_uri == @redirect_uri
       assert err.state == "xyz"
     end

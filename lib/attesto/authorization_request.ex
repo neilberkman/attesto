@@ -192,26 +192,33 @@ defmodule Attesto.AuthorizationRequest do
            ) do
       {:ok, Map.merge(params, object_params)}
     else
+      {:error, :request_not_supported} ->
+        redirect_request_object_error(params, "request_not_supported", "request object is not supported", opts)
+
       _ ->
-        case validate_redirect_uri(params, Keyword.fetch!(opts, :registered_redirect_uris)) do
-          {:ok, redirect_uri} ->
-            state = string_or_nil(Map.get(params, "state"))
-
-            {:error,
-             redirect_error(
-               "invalid_request_object",
-               "request object is invalid",
-               redirect_uri,
-               state
-             )}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+        redirect_request_object_error(params, "invalid_request_object", "request object is invalid", opts)
     end
   end
 
   defp merge_request_object(params, _opts), do: {:ok, params}
+
+  defp redirect_request_object_error(params, error, description, opts) do
+    case validate_redirect_uri(params, Keyword.fetch!(opts, :registered_redirect_uris)) do
+      {:ok, redirect_uri} ->
+        state = string_or_nil(Map.get(params, "state"))
+
+        {:error,
+         redirect_error(
+           error,
+           description,
+           redirect_uri,
+           state
+         )}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp fetch_request_object_jwks(opts) do
     case Keyword.get(opts, :request_object_jwks) do

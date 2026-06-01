@@ -6,6 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-01
+
+### Fixed
+
+- Unsigned OpenID Connect request objects (`request` JWTs with `alg: "none"`)
+  are now rejected with the redirectable `request_not_supported` error instead
+  of `invalid_request_object`. Attesto still deliberately does not accept
+  unsigned request objects; this change makes the unsupported-feature signal
+  match OIDC Core §3.1.2.6 and the OpenID conformance suite.
+
 ## [0.6.1] - 2026-05-31
 
 ### Added

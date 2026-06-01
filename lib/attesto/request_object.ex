@@ -20,6 +20,7 @@ defmodule Attesto.RequestObject do
 
   @type verify_error ::
           :invalid_request_object
+          | :request_not_supported
           | :invalid_signature
           | :invalid_issuer
           | :invalid_audience
@@ -37,6 +38,7 @@ defmodule Attesto.RequestObject do
     with :ok <- check_compact_form(jwt),
          {:ok, header} <- peek_header(jwt),
          :ok <- check_crit(header),
+         :ok <- check_supported_alg(header),
          {:ok, claims} <- verify_signature(jwt, header, trusted_jwks),
          :ok <- check_issuer(claims, Keyword.get(opts, :issuer)),
          :ok <- check_audience(claims, Keyword.get(opts, :audience)),
@@ -141,6 +143,9 @@ defmodule Attesto.RequestObject do
   defp check_crit(header) do
     if Map.has_key?(header, "crit"), do: {:error, :unsupported_critical_header}, else: :ok
   end
+
+  defp check_supported_alg(%{"alg" => "none"}), do: {:error, :request_not_supported}
+  defp check_supported_alg(_header), do: :ok
 
   defp check_compact_form(jwt) do
     case String.split(jwt, ".") do
