@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-06-01
+
+### Fixed
+
+- Load keystore modules before checking optional callbacks such as
+  `verification_pems/0`, `key_algs/0`, and `signing_alg/0`. Cold modules now
+  advertise and use their configured per-key algorithms deterministically
+  instead of briefly falling back to inferred RSA `RS256` metadata.
+
 ## [0.6.3] - 2026-06-01
 
 ### Added

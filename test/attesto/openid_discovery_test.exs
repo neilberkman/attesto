@@ -6,6 +6,7 @@ defmodule Attesto.OpenIDDiscoveryTest do
   alias Attesto.Keystore.Static
   alias Attesto.OpenIDDiscovery
   alias Attesto.PrincipalKind
+  alias Attesto.Test.PS256Keystore
 
   defp config(overrides \\ []) do
     [
@@ -31,6 +32,20 @@ defmodule Attesto.OpenIDDiscoveryTest do
       assert meta["claim_types_supported"] == ["normal"]
       assert meta["request_parameter_supported"] == false
       assert meta["code_challenge_methods_supported"] == ["S256"]
+    end
+
+    test "loads keystore modules before deriving advertised ID Token algorithms" do
+      module_path = :code.which(PS256Keystore)
+      :code.purge(PS256Keystore)
+      :code.delete(PS256Keystore)
+
+      assert function_exported?(PS256Keystore, :verification_pems, 0) == false
+      assert is_list(module_path)
+
+      meta = OpenIDDiscovery.metadata(config(keystore: PS256Keystore))
+
+      assert meta["id_token_signing_alg_values_supported"] == ["PS256"]
+      assert function_exported?(PS256Keystore, :verification_pems, 0)
     end
 
     test "does not advertise optional host fields when omitted" do

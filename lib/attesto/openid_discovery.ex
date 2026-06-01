@@ -162,7 +162,7 @@ defmodule Attesto.OpenIDDiscovery do
   end
 
   defp signing_algs(%Config{keystore: keystore}) do
-    if function_exported?(keystore, :verification_pems, 0) do
+    if exports?(keystore, :verification_pems, 0) do
       keystore.verification_pems()
       |> Enum.map(&SigningAlg.for_key(keystore, &1))
       |> Enum.uniq()
@@ -175,5 +175,12 @@ defmodule Attesto.OpenIDDiscovery do
     end
   rescue
     _ -> @id_token_signing_alg_values
+  end
+
+  defp exports?(module, function, arity) do
+    case Code.ensure_loaded(module) do
+      {:module, ^module} -> function_exported?(module, function, arity)
+      {:error, _reason} -> false
+    end
   end
 end

@@ -79,7 +79,7 @@ defmodule Attesto.SigningAlg do
   end
 
   defp key_algs(keystore) do
-    if function_exported?(keystore, :key_algs, 0) do
+    if exports?(keystore, :key_algs, 0) do
       keystore.key_algs()
       |> Map.new(fn {kid, alg} -> {to_string(kid), alg} end)
     else
@@ -88,11 +88,18 @@ defmodule Attesto.SigningAlg do
   end
 
   defp fallback_signing_alg(nil, keystore, opts) do
-    if Keyword.get(opts, :signing?) && function_exported?(keystore, :signing_alg, 0),
+    if Keyword.get(opts, :signing?) && exports?(keystore, :signing_alg, 0),
       do: keystore.signing_alg()
   end
 
   defp fallback_signing_alg(alg, _keystore, _opts), do: alg
+
+  defp exports?(module, function, arity) do
+    case Code.ensure_loaded(module) do
+      {:module, ^module} -> function_exported?(module, function, arity)
+      {:error, _reason} -> false
+    end
+  end
 
   defp fallback_inferred_alg(nil, jwk), do: infer(jwk)
   defp fallback_inferred_alg(alg, _jwk), do: alg
