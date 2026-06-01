@@ -181,7 +181,7 @@ Attesto.Scope.grants_all?(catalog, ["documents.read"], ["documents.write"])
 | What you supply | What's in the box |
 | --- | --- |
 | Principal definitions (`Attesto.PrincipalKind`) | Token issue and verify (`Attesto.Token`) |
-| Signing / verification keys, rotation (`Attesto.Keystore`) | RS256 JWS signing, `kid` selection, claim validation |
+| Signing / verification keys, rotation (`Attesto.Keystore`) | JWS signing, `kid` selection, claim validation |
 | Authorization policy ("may this principal do X?") | DPoP proof verification + replay protection (`Attesto.DPoP`) |
 | HTTP layer, routing, plugs | mTLS certificate-binding checks (`Attesto.MTLS`) |
 | Persistence, sessions, IdP integration | Scope grant-form matching (`Attesto.Scope`) |
@@ -256,7 +256,7 @@ constraint.
 
 ## Status
 
-A `0.x` release: still pre-1.0, so the API may change between minor versions (read the CHANGELOG before upgrading). Implemented and tested: token issue/verify, DPoP, mTLS, scope, keystore, PKCE, JWKS publication, OIDC discovery, the authorization-code grant (single-use, PKCE-mandatory, optional DPoP binding), refresh-token rotation with reuse detection, and token revocation (RFC 7009, refresh-token family). The stateful grants run against the `Attesto.CodeStore` / `Attesto.RefreshStore` behaviours, with ETS reference implementations included; a production host implements those over its own database (the atomic-`take` and atomic-`consume` contracts are documented). Cross-language parity tests check Attesto-issued artifacts against a reference implementation in another language. Pin to `~> 0.5`.
+A `0.x` release: still pre-1.0, so the API may change between minor versions (read the CHANGELOG before upgrading). Implemented and tested: token issue/verify, DPoP, mTLS, scope, keystore, PKCE validation, JWKS publication, OIDC discovery, the authorization-code grant (single-use, optionally DPoP-bound), refresh-token rotation with reuse detection, and token revocation (RFC 7009, refresh-token family). The stateful grants run against the `Attesto.CodeStore` / `Attesto.RefreshStore` behaviours, with ETS reference implementations included; a production host implements those over its own database (the atomic-`take` and atomic-`consume` contracts are documented). Cross-language parity tests check Attesto-issued artifacts against a reference implementation in another language. Pin to `~> 0.6`.
 
 ## Development
 
