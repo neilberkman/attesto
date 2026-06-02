@@ -73,4 +73,27 @@ defmodule Attesto.ClientAssertionTest do
     key = ec_key()
     assert {:ok, @client_id} = ClientAssertion.peek_client_id(assertion(key))
   end
+
+  test "rejects an RS256-signed assertion - FAPI 2 forbids RS256 for client auth" do
+    key = JOSE.JWK.generate_key({:rsa, 2048})
+    now = System.system_time(:second)
+
+    claims = %{
+      "iss" => @client_id,
+      "sub" => @client_id,
+      "aud" => @audience,
+      "iat" => now,
+      "exp" => now + 60,
+      "jti" => "jti-rs256"
+    }
+
+    header = %{"alg" => "RS256", "kid" => JOSE.JWK.thumbprint(key)}
+    {_header, jwt} = key |> JOSE.JWT.sign(header, claims) |> JOSE.JWS.compact()
+
+    {_kty, jwk} = JOSE.JWK.to_public_map(key)
+    jwk = Map.merge(jwk, %{"kid" => JOSE.JWK.thumbprint(key), "alg" => "RS256"})
+
+    assert {:error, :invalid_signature} =
+             ClientAssertion.verify(jwt, @client_id, @audience, %{"keys" => [jwk]})
+  end
 end

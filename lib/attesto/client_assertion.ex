@@ -97,6 +97,7 @@ defmodule Attesto.ClientAssertion do
       alg = Map.get(jwk_map, "alg") || SigningAlg.infer(jwk)
       {Map.get(jwk_map, "kid"), SigningAlg.validate!(alg), jwk}
     end)
+    |> Enum.filter(fn {_kid, alg, _jwk} -> alg in SigningAlg.fapi_algs() end)
     |> filter_by_kid(header_kid)
   rescue
     _ -> []

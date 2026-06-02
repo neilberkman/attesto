@@ -6,6 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-06-02
+
+### Changed
+
+- Restrict client-authentication assertions (`private_key_jwt`) and request
+  objects to the FAPI 2 signing algorithms PS256, ES256, and EdDSA. Assertions
+  or request objects signed with RS256 are now rejected. `Attesto.SigningAlg`
+  exposes the permitted set via `fapi_algs/0`. The provider's own token signing
+  (`allowed/0`) is unaffected and still admits RS256.
+
 ## [0.6.8] - 2026-06-02
 
 ### Fixed

@@ -19,6 +19,20 @@ defmodule Attesto.SigningAlg do
   @spec allowed() :: [alg()]
   def allowed, do: @allowed
 
+  @fapi_algs ~w(PS256 ES256 EdDSA)
+
+  @doc """
+  Signing algorithms permitted for FAPI 2 client authentication and request
+  objects: PS256, ES256, EdDSA.
+
+  RS256 (RSASSA-PKCS1-v1_5) is deliberately excluded - FAPI 2 mandates PS256
+  for RSA keys. This is the policy gate for verifying a signature a *client*
+  presents; it is narrower than `allowed/0`, which still admits RS256 for the
+  provider's own token signing.
+  """
+  @spec fapi_algs() :: [alg()]
+  def fapi_algs, do: @fapi_algs
+
   @doc """
   Resolve the algorithm for a key in `keystore`.
 
