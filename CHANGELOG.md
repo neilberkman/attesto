@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-06-01
+
+### Fixed
+
+- Accept DPoP proof `iat` values up to 60 seconds ahead of the server clock,
+  matching Attesto's JWT verifier clock-skew policy. Proofs remain
+  short-lived through `max_age_seconds`, and replay-cache TTLs now cover the
+  full acceptance window.
+
 ## [0.6.6] - 2026-06-01
 
 ### Fixed

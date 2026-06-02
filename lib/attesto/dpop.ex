@@ -71,8 +71,10 @@ defmodule Attesto.DPoP do
   @allowed_algs ~w(ES256 ES384 ES512 RS256 RS384 RS512 PS256 PS384 PS512 EdDSA)
   @proof_typ "dpop+jwt"
   @default_max_age_seconds 60
-  # Modest leeway for client clocks that are slightly ahead of ours.
-  @future_skew_seconds 5
+  # Match the verifier-wide clock skew used for JWT assertions and ID/access
+  # tokens. DPoP proofs are still short-lived by `@default_max_age_seconds`;
+  # this only tolerates clients whose clocks are slightly ahead of the server.
+  @future_skew_seconds 60
   # RFC 9449 places no upper bound on `jti` length, but the replay cache
   # holds every `jti` for the entire acceptance window. A malicious
   # client could exhaust memory with megabyte-sized values; cap at 256

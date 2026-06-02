@@ -458,7 +458,7 @@ defmodule Attesto.DPoPTest do
     end
 
     test "tolerates small future-clock skew on iat" do
-      iat = unix_now() + 3
+      iat = unix_now() + 10
       {proof, _jkt} = Factory.dpop_proof(iat: iat)
 
       assert {:ok, _} = DPoP.verify_proof(proof, base_opts())
@@ -703,8 +703,8 @@ defmodule Attesto.DPoPTest do
                DPoP.verify_proof(proof, base_opts(replay_check: replay_check))
 
       # The verifier passes the acceptance window (default max_age 60 +
-      # future skew 5) as the TTL the cache must remember the jti for.
-      assert_received {:replay_check_called, ^jti, 65}
+      # future skew 60) as the TTL the cache must remember the jti for.
+      assert_received {:replay_check_called, ^jti, 120}
       # Exactly once.
       refute_received {:replay_check_called, _, _}
     end
@@ -717,7 +717,7 @@ defmodule Attesto.DPoPTest do
       assert {:ok, _} =
                DPoP.verify_proof(proof, base_opts(max_age_seconds: 300, replay_check: replay_check))
 
-      assert_received {:ttl, 305}
+      assert_received {:ttl, 360}
     end
 
     test "rejects the request when :replay_check returns {:error, :replay}" do
