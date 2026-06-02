@@ -131,12 +131,10 @@ defmodule Attesto.DPoPTest do
       assert {:ok, _} = DPoP.verify_proof(proof, base_opts(http_uri: live_uri))
     end
 
-    test "a proof whose own htu carries a query is rejected (RFC 9449 §4.3)" do
-      # The client MUST construct htu without query/fragment; a proof that
-      # does not is non-conformant and rejected rather than silently stripped.
+    test "a proof whose own htu carries a query still matches the effective target uri" do
       {proof, _jkt} = Factory.dpop_proof(htu: "https://api.example.com/positions?cursor=xyz")
 
-      assert {:error, :invalid_htu} =
+      assert {:ok, _} =
                DPoP.verify_proof(proof, base_opts(http_uri: "https://api.example.com/positions"))
     end
 
@@ -416,18 +414,39 @@ defmodule Attesto.DPoPTest do
       end
     end
 
-    test "a query/fragment on the live side is normalized away; on the proof side it is rejected" do
-      # Live side carries a fragment: stripped, so a clean proof matches.
+    test "query and fragment are ignored for htu comparison" do
       {clean, _jkt} = Factory.dpop_proof(htu: "https://api.example.com/x")
 
       assert {:ok, _} =
                DPoP.verify_proof(clean, base_opts(http_uri: "https://api.example.com/x#section"))
 
-      # Proof side carries a fragment: non-conformant, rejected.
-      {dirty, _jkt} = Factory.dpop_proof(htu: "https://api.example.com/x#section")
+      {with_query_and_fragment, _jkt} =
+        Factory.dpop_proof(htu: "https://api.example.com/x?cb=1#section")
+
+      assert {:ok, _} =
+               DPoP.verify_proof(
+                 with_query_and_fragment,
+                 base_opts(http_uri: "https://api.example.com/x")
+               )
+    end
+
+    test "normalizes scheme/host case and the default HTTPS port" do
+      {upper_case, _jkt} = Factory.dpop_proof(htu: "HTTPS://API.EXAMPLE.COM/oauth/token")
+
+      assert {:ok, _} =
+               DPoP.verify_proof(upper_case, base_opts(http_uri: "https://api.example.com/oauth/token"))
+
+      {default_port, _jkt} = Factory.dpop_proof(htu: "https://api.example.com:443/oauth/token")
+
+      assert {:ok, _} =
+               DPoP.verify_proof(default_port, base_opts(http_uri: "https://api.example.com/oauth/token"))
+    end
+
+    test "still rejects non-default port mismatches" do
+      {proof, _jkt} = Factory.dpop_proof(htu: "https://api.example.com:444/oauth/token")
 
       assert {:error, :invalid_htu} =
-               DPoP.verify_proof(dirty, base_opts(http_uri: "https://api.example.com/x"))
+               DPoP.verify_proof(proof, base_opts(http_uri: "https://api.example.com/oauth/token"))
     end
   end
 

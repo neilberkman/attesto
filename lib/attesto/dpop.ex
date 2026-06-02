@@ -402,37 +402,34 @@ defmodule Attesto.DPoP do
   defp check_htu(%{"htu" => htu}, opts) when is_binary(htu) do
     expected = require_string!(opts, :http_uri)
 
-    cond do
-      # An HTTPS-only rule applies to the URI a DPoP proof is bound to. A
-      # proof signed for `http://…` - or attached to a request whose
-      # observed URI is `http://…` - is a downgrade attempt or a
-      # misconfigured client, and we fail closed rather than verify it.
-      not String.starts_with?(htu, "https://") -> {:error, :invalid_htu}
-      not String.starts_with?(expected, "https://") -> {:error, :invalid_htu}
-      # RFC 9449 §4.3: the client MUST construct `htu` WITHOUT the query and
-      # fragment. A proof whose `htu` carries either is non-conformant, so
-      # we reject it rather than silently stripping the proof side. (The
-      # server-observed `expected` URI may still carry a query/fragment,
-      # which we normalise away below.)
-      htu != normalize_htu(htu) -> {:error, :invalid_htu}
-      normalize_htu(htu) == normalize_htu(expected) -> :ok
-      true -> {:error, :invalid_htu}
+    with {:ok, proof_uri} <- normalize_htu(htu),
+         {:ok, expected_uri} <- normalize_htu(expected) do
+      if proof_uri == expected_uri, do: :ok, else: {:error, :invalid_htu}
     end
   end
 
   defp check_htu(_claims, _opts), do: {:error, :invalid_htu}
 
-  # RFC 9449 §4.3: the `htu` claim is the request URI without query and
-  # fragment. The proof side must already be clean (enforced in
-  # `check_htu/2`); we normalise the server-observed side so a live request
-  # URL carrying a `?cb=1` etc. still matches a clean proof `htu`.
+  # RFC 9449 §4.3: compare the effective target URI without query/fragment.
+  # URI scheme and host are case-insensitive, and an explicit HTTPS default
+  # port is equivalent to an omitted port.
   defp normalize_htu(uri) do
-    uri
-    |> String.split("#", parts: 2)
-    |> List.first()
-    |> String.split("?", parts: 2)
-    |> List.first()
+    parsed = URI.parse(uri)
+    scheme = parsed.scheme && String.downcase(parsed.scheme)
+    host = parsed.host && String.downcase(parsed.host)
+
+    cond do
+      scheme != "https" -> {:error, :invalid_htu}
+      is_nil(host) or host == "" -> {:error, :invalid_htu}
+      not is_nil(parsed.userinfo) -> {:error, :invalid_htu}
+      true -> {:ok, {scheme, host, normalize_htu_port(parsed.port), parsed.path || ""}}
+    end
+  rescue
+    _ -> {:error, :invalid_htu}
   end
+
+  defp normalize_htu_port(443), do: nil
+  defp normalize_htu_port(port), do: port
 
   defp check_iat(%{"iat" => iat}, opts) when is_integer(iat) and iat >= 0 do
     now = unix_now(opts)

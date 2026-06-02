@@ -2,24 +2,11 @@ defmodule Attesto.DPoPHtuTest do
   @moduledoc false
   # RFC 9449 §4.3 htu comparison edge cases.
   #
-  # `Attesto.DPoP.check_htu/2` (via `normalize_htu/1`) does NOT implement a
-  # normalizing URI verifier. It strips fragment and query from both the
-  # proof's `htu` claim and the live `:http_uri`, then compares the two
-  # remainders as raw strings with `==`. The only scheme handling is a
-  # case-sensitive `String.starts_with?(uri, "https://")` gate on each side.
-  #
-  # The consequence is that attesto is STRICTER than a fully normalizing
-  # RFC 3986 verifier on every dimension below (userinfo, default-port
-  # equivalence, host case, percent-encoding, trailing slash): forms that
-  # an RFC normalizer would treat as equivalent are rejected here because
-  # the byte strings differ. Being stricter is a usability cost, not a
-  # security gap: the verifier never accepts a request bound to a host or
-  # path the client did not sign. There is no direction in which attesto is
-  # MORE permissive than a normalizer about the host, so none of these edges
-  # is flagged as a source bug.
-  #
-  # Each test asserts attesto's CURRENT behavior (the exact atom or :ok),
-  # not the behavior a normalizer would have.
+  # `Attesto.DPoP.check_htu/2` compares the effective target URI without
+  # query/fragment, normalizes scheme/host case, and treats the default HTTPS
+  # port as equivalent to an omitted port. It does not decode path
+  # percent-encoding, normalize IPv6 text forms, or accept userinfo-bearing
+  # URIs.
   use ExUnit.Case, async: true
 
   alias Attesto.DPoP
@@ -57,21 +44,18 @@ defmodule Attesto.DPoPHtuTest do
   # -----------------------------------------------------------------
 
   describe "query and fragment components" do
-    # RFC 9449 §4.3: the client MUST construct htu WITHOUT query/fragment.
-    # A proof whose own htu carries either is non-conformant and rejected;
-    # the server-observed (live) URI may carry them and is normalized away.
-    test "proof htu with a query is rejected" do
-      assert {:error, :invalid_htu} =
+    test "proof htu with a query is normalized before comparison" do
+      assert {:ok, _} =
                verify("https://api.example.com/resource?cb=1", "https://api.example.com/resource")
     end
 
-    test "proof htu with a fragment is rejected" do
-      assert {:error, :invalid_htu} =
+    test "proof htu with a fragment is normalized before comparison" do
+      assert {:ok, _} =
                verify("https://api.example.com/resource#section", "https://api.example.com/resource")
     end
 
-    test "proof htu with both query and fragment is rejected" do
-      assert {:error, :invalid_htu} =
+    test "proof htu with both query and fragment is normalized before comparison" do
+      assert {:ok, _} =
                verify("https://api.example.com/resource?cb=1&x=2#frag", "https://api.example.com/resource")
     end
 
@@ -104,10 +88,7 @@ defmodule Attesto.DPoPHtuTest do
   # -----------------------------------------------------------------
 
   describe "userinfo component" do
-    test "userinfo in the proof htu is NOT stripped; mismatch vs userinfo-free live uri" do
-      # An RFC 3986 normalizer drops userinfo before comparing authority;
-      # attesto keeps it as part of the raw string, so the two differ.
-      # Stricter than a normalizer, but safe (host still matches).
+    test "userinfo in the proof htu is rejected" do
       assert {:error, :invalid_htu} =
                verify(
                  "https://user:pw@api.example.com/resource",
@@ -115,12 +96,12 @@ defmodule Attesto.DPoPHtuTest do
                )
     end
 
-    test "userinfo on both sides, byte-identical, verifies" do
+    test "userinfo on both sides is rejected" do
       uri = "https://user:pw@api.example.com/resource"
-      assert {:ok, _} = verify(uri, uri)
+      assert {:error, :invalid_htu} = verify(uri, uri)
     end
 
-    test "differing userinfo with same host is rejected (raw-string compare)" do
+    test "differing userinfo with same host is rejected" do
       assert {:error, :invalid_htu} =
                verify(
                  "https://alice@api.example.com/resource",
@@ -134,11 +115,8 @@ defmodule Attesto.DPoPHtuTest do
   # -----------------------------------------------------------------
 
   describe "default-port equivalence" do
-    test "explicit :443 in proof htu does NOT match a port-less live uri" do
-      # RFC 3986 §3.2.3: an explicit default port is equivalent to omitting
-      # it. attesto compares raw strings, so :443 vs nothing differs.
-      # Stricter than a normalizer, safe (same host).
-      assert {:error, :invalid_htu} =
+    test "explicit :443 in proof htu matches a port-less live uri" do
+      assert {:ok, _} =
                verify(
                  "https://api.example.com:443/resource",
                  "https://api.example.com/resource"
@@ -164,33 +142,24 @@ defmodule Attesto.DPoPHtuTest do
   # -----------------------------------------------------------------
 
   describe "scheme and host case" do
-    test "uppercase scheme in the proof htu fails the https:// gate" do
-      # `String.starts_with?("HTTPS://...", "https://")` is false, so the
-      # downgrade gate fires on the proof side and returns :invalid_htu
-      # BEFORE any normalize/compare. RFC 3986 §3.1 makes scheme
-      # case-insensitive; attesto's gate is case-sensitive.
-      assert {:error, :invalid_htu} =
+    test "uppercase scheme in the proof htu is normalized" do
+      assert {:ok, _} =
                verify(
                  "HTTPS://api.example.com/resource",
                  "https://api.example.com/resource"
                )
     end
 
-    test "uppercase scheme in the live uri fails the https:// gate" do
-      assert {:error, :invalid_htu} =
+    test "uppercase scheme in the live uri is normalized" do
+      assert {:ok, _} =
                verify(
                  "https://api.example.com/resource",
                  "HTTPS://api.example.com/resource"
                )
     end
 
-    test "lowercase https with differing HOST case is rejected (host not case-folded)" do
-      # Scheme gate passes (both start with lowercase https://), then the
-      # raw compare sees HOST != host. RFC 3986 §3.2.2 makes host
-      # case-insensitive; attesto does not fold it. Stricter, and crucially
-      # this is the SAFE direction: it never accepts a differently-cased
-      # host as equal, it rejects it.
-      assert {:error, :invalid_htu} =
+    test "lowercase https with differing HOST case is normalized" do
+      assert {:ok, _} =
                verify(
                  "https://API.EXAMPLE.COM/resource",
                  "https://api.example.com/resource"
@@ -213,8 +182,8 @@ defmodule Attesto.DPoPHtuTest do
       assert {:ok, _} = verify(uri, uri)
     end
 
-    test "IPv6 literal with explicit :443 does not match the port-less form" do
-      assert {:error, :invalid_htu} =
+    test "IPv6 literal with explicit :443 matches the port-less form" do
+      assert {:ok, _} =
                verify(
                  "https://[2001:db8::1]:443/resource",
                  "https://[2001:db8::1]/resource"

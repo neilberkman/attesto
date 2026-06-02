@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-06-02
+
+### Fixed
+
+- Canonicalize DPoP `htu` URI comparison by ignoring query/fragment,
+  normalizing scheme and host case, and treating an explicit HTTPS default port
+  as equivalent to an omitted port. Non-HTTPS URIs, host/path mismatches, and
+  non-default port mismatches remain rejected.
+
 ## [0.6.7] - 2026-06-01
 
 ### Fixed
