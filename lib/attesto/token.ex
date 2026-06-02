@@ -424,12 +424,8 @@ defmodule Attesto.Token do
   # header `jose_header/3` computes is exactly what ends up on the wire.
   defp sign(config, claims) do
     pem = config.keystore.signing_pem()
-    jwk = Key.signing_jwk(pem)
     alg = SigningAlg.for_key(config.keystore, pem, signing?: true)
-    payload = JSON.encode!(claims)
-    signed = JOSE.JWS.sign(jwk, payload, jose_header(config, pem, claims, alg))
-    {_protected_header, compact} = JOSE.JWS.compact(signed)
-    compact
+    Attesto.JWS.sign_compact(pem, jose_header(config, pem, claims, alg), claims)
   end
 
   # RFC 9068 §2.1: an OAuth JWT access token SHOULD carry the JOSE header

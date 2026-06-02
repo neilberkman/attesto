@@ -6,6 +6,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-06-01
+
+### Fixed
+
+- Sign `PS256` JWTs with the RFC 7518 salt length (32 bytes for SHA-256)
+  instead of JOSE/OpenSSL's maximum salt length. This makes PS256 access
+  tokens and ID Tokens verifiable by strict FAPI/OIDF validators while keeping
+  Attesto's key-derived algorithm policy unchanged.
+- Treat signed authorization request object parameters as authoritative
+  (RFC 9101 §6.3). When a `request` JWT is present, unsigned query parameters
+  no longer supplement missing signed parameters such as PKCE inputs.
+- Require signed request objects to carry `iss`, matching `client_id`, and a
+  configured `aud`, preventing cross-client or cross-issuer replay of otherwise
+  valid request objects.
+- Reject access-token-shaped payloads during ID Token verification even when the
+  access token JOSE `typ` header is intentionally disabled.
+
 ## [0.6.5] - 2026-06-01
 
 ### Fixed

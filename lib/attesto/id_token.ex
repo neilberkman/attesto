@@ -209,7 +209,10 @@ defmodule Attesto.IDToken do
        parameter (RFC 7515 §4.1.11) is rejected with
        `:unsupported_critical_header`. The JOSE header `typ`, when present,
        MUST be `"JWT"`; an access-token header such as `"at+jwt"` is
-       `:unexpected_typ`.
+       `:unexpected_typ`. Verification also rejects access-token-only
+       payload claims such as `scope`, `typ: "access"`, and the configured
+       principal-kind claim, so token-type separation does not depend solely
+       on the optional JOSE `typ` header.
     2. **`iss`** equals the configured issuer (OIDC Core §3.1.3.7 item 1).
     3. **`aud`** contains the expected `client_id`
        (OIDC Core §3.1.3.7 item 3).
@@ -239,6 +242,7 @@ defmodule Attesto.IDToken do
   def verify(%Config{} = config, id_token, opts) when is_binary(id_token) and is_list(opts) do
     with {:ok, client_id} <- fetch_client_id(opts),
          {:ok, claims} <- verify_signature(config, id_token),
+         :ok <- check_token_purpose(config, claims),
          :ok <- check_issuer(config, claims),
          :ok <- check_audience(claims, client_id),
          :ok <- check_azp(claims, client_id),
@@ -300,11 +304,7 @@ defmodule Attesto.IDToken do
   # the `typ` is the deliberate `JWT` and the `kid`/`alg` are pinned.
   defp sign(config, claims, alg) do
     pem = config.keystore.signing_pem()
-    jwk = Key.signing_jwk(pem)
-    payload = JSON.encode!(claims)
-    signed = JOSE.JWS.sign(jwk, payload, jose_header(pem, alg))
-    {_protected_header, compact} = JOSE.JWS.compact(signed)
-    compact
+    Attesto.JWS.sign_compact(pem, jose_header(pem, alg), claims)
   end
 
   defp signing_alg(config) do
@@ -439,6 +439,22 @@ defmodule Attesto.IDToken do
     case Keyword.get(opts, :client_id) do
       client_id when is_binary(client_id) and client_id != "" -> {:ok, client_id}
       _ -> {:error, :missing_client_id}
+    end
+  end
+
+  defp check_token_purpose(config, claims) do
+    cond do
+      Map.has_key?(claims, "scope") ->
+        {:error, :unexpected_typ}
+
+      Map.get(claims, "typ") in ["access", "refresh"] ->
+        {:error, :unexpected_typ}
+
+      Map.has_key?(claims, config.principal_kind_claim) ->
+        {:error, :unexpected_typ}
+
+      true ->
+        :ok
     end
   end
 

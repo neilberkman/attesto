@@ -190,7 +190,7 @@ defmodule Attesto.AuthorizationRequest do
              issuer: Map.get(params, "client_id"),
              audience: Keyword.get(opts, :request_object_audience)
            ) do
-      {:ok, Map.merge(params, object_params)}
+      {:ok, object_params}
     else
       {:error, :request_not_supported} ->
         redirect_request_object_error(params, "request_not_supported", "request object is not supported", opts)
@@ -297,10 +297,11 @@ defmodule Attesto.AuthorizationRequest do
     end
   end
 
-  # OpenID Connect Core §6 / §3.1.2.6: request objects are verified and merged
-  # before this point when the caller supplies `:request_object_jwks`. A raw
-  # `request_uri` is still rejected here unless the transport layer has already
-  # resolved it (PAR) into normal params.
+  # OpenID Connect Core §6 / RFC 9101 §6.3: when a request object is present,
+  # `merge_request_object/2` has already replaced the effective authorization
+  # parameter map with the verified object parameters. A raw `request_uri` is
+  # still rejected here unless the transport layer has already resolved it
+  # (PAR) into normal params.
   defp validate_request_object_params(params, redirect_uri, state) do
     if present?(Map.get(params, "request_uri")) do
       {:error,

@@ -14,7 +14,7 @@ defmodule Attesto.RequestObject do
 
   @type verify_opts :: [
           {:now, DateTime.t() | non_neg_integer()}
-          | {:issuer, String.t()}
+          | {:issuer, String.t() | nil}
           | {:audience, String.t() | [String.t()]}
         ]
 
@@ -30,6 +30,10 @@ defmodule Attesto.RequestObject do
 
   @doc """
   Verify and return a string-keyed parameter map from a signed request object.
+
+  The object must carry `iss`, `client_id`, and `aud`. `iss` must match the
+  object's `client_id` and the caller-supplied `:issuer`; `aud` must match the
+  caller-supplied `:audience`.
   """
   @spec verify(String.t(), map() | [map()] | map(), verify_opts()) :: {:ok, map()} | {:error, verify_error()}
   def verify(jwt, trusted_jwks, opts \\ [])
@@ -40,6 +44,7 @@ defmodule Attesto.RequestObject do
          :ok <- check_crit(header),
          :ok <- check_supported_alg(header),
          {:ok, claims} <- verify_signature(jwt, header, trusted_jwks),
+         :ok <- check_claim_issuer(claims),
          :ok <- check_issuer(claims, Keyword.get(opts, :issuer)),
          :ok <- check_audience(claims, Keyword.get(opts, :audience)),
          :ok <- check_expiry(claims, opts),
@@ -88,11 +93,16 @@ defmodule Attesto.RequestObject do
     end)
   end
 
-  defp check_issuer(_claims, nil), do: :ok
+  defp check_claim_issuer(%{"client_id" => client_id, "iss" => client_id})
+       when is_binary(client_id) and client_id != "", do: :ok
+
+  defp check_claim_issuer(_claims), do: {:error, :invalid_issuer}
+
+  defp check_issuer(_claims, nil), do: {:error, :invalid_issuer}
   defp check_issuer(%{"iss" => iss}, iss), do: :ok
   defp check_issuer(_claims, _issuer), do: {:error, :invalid_issuer}
 
-  defp check_audience(_claims, nil), do: :ok
+  defp check_audience(_claims, nil), do: {:error, :invalid_audience}
 
   defp check_audience(%{"aud" => aud}, expected) when is_list(expected) do
     if aud_intersects?(aud, expected), do: :ok, else: {:error, :invalid_audience}

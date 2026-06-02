@@ -7,6 +7,7 @@ defmodule Attesto.IDTokenTest do
   alias Attesto.IDToken
   alias Attesto.Key
   alias Attesto.Test.Factory
+  alias Attesto.Token
 
   @client_id "client-abc"
   @subject "usr_end_user_1"
@@ -314,6 +315,23 @@ defmodule Attesto.IDTokenTest do
     test "rejects an access-token JOSE typ", %{config: config} do
       jwt = signed_id_token(config, %{}, %{"typ" => "at+jwt"})
       assert {:error, :unexpected_typ} = IDToken.verify(config, jwt, client_id: @client_id)
+    end
+
+    test "rejects an access token even when access-token JOSE typ is disabled", %{pem: pem} do
+      config = Factory.config(pem, access_token_header_typ: nil)
+
+      principal = %{
+        kind: "client",
+        sub: "oc_client_1",
+        scopes: ["read"],
+        claims: %{"client_id" => "client-1"}
+      }
+
+      assert {:ok, %{access_token: access_token}} = Token.mint(config, principal)
+      refute Map.has_key?(header!(access_token), "typ")
+
+      assert {:error, :unexpected_typ} =
+               IDToken.verify(config, access_token, client_id: config.audience)
     end
 
     test "rejects alg none as invalid_signature", %{config: config} do

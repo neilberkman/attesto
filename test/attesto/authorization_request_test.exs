@@ -44,6 +44,17 @@ defmodule Attesto.AuthorizationRequestTest do
     header <> "." <> payload <> "."
   end
 
+  defp signed_request_object(claims, opts \\ []) do
+    jwk = Keyword.get_lazy(opts, :jwk, fn -> JOSE.JWK.generate_key({:ec, "P-256"}) end)
+    kid = Keyword.get(opts, :kid, "client-key-1")
+    alg = Keyword.get(opts, :alg, "ES256")
+    {_, public_map} = JOSE.JWK.to_public_map(jwk)
+    client_jwk = Map.merge(public_map, %{"kid" => kid, "alg" => alg})
+    header = %{"alg" => alg, "kid" => kid}
+    {_, request} = jwk |> JOSE.JWT.sign(header, claims) |> JOSE.JWS.compact()
+    {request, client_jwk}
+  end
+
   describe "validate/2 success" do
     test "accepts a valid OIDC authorization-code request" do
       assert {:ok, req} = validate(base_params())
@@ -215,6 +226,95 @@ defmodule Attesto.AuthorizationRequestTest do
         })
 
       assert {:error, {:direct, :redirect_uri_not_registered}} = validate(params)
+    end
+
+    test "request object parameters are authoritative and query PKCE cannot supplement them" do
+      {request, client_jwk} =
+        signed_request_object(%{
+          "iss" => "client-123",
+          "aud" => "https://issuer.example",
+          "client_id" => "client-123",
+          "redirect_uri" => @redirect_uri,
+          "response_type" => "code",
+          "scope" => "openid profile",
+          "state" => "signed-state"
+        })
+
+      attacker_verifier = String.duplicate("a", 64)
+      attacker_challenge = Attesto.Thumbprint.of(attacker_verifier)
+
+      params =
+        %{
+          "request" => request,
+          "client_id" => "client-123",
+          "redirect_uri" => @redirect_uri,
+          "state" => "attacker-state",
+          "scope" => "openid admin",
+          "code_challenge" => attacker_challenge,
+          "code_challenge_method" => "S256"
+        }
+
+      assert {:error, {:redirect, err}} =
+               AuthorizationRequest.validate(params,
+                 registered_redirect_uris: @registered,
+                 request_object_jwks: %{"keys" => [client_jwk]},
+                 request_object_audience: "https://issuer.example"
+               )
+
+      assert err.error == "invalid_request"
+      assert err.error_description =~ "code_challenge"
+      assert err.state == "signed-state"
+    end
+
+    test "request object validation requires an audience" do
+      {request, client_jwk} =
+        signed_request_object(%{
+          "iss" => "client-123",
+          "aud" => "https://issuer.example",
+          "client_id" => "client-123",
+          "redirect_uri" => @redirect_uri,
+          "response_type" => "code",
+          "scope" => "openid",
+          "code_challenge" => @code_challenge,
+          "code_challenge_method" => "S256"
+        })
+
+      assert {:error, {:redirect, err}} =
+               AuthorizationRequest.validate(base_params(%{"request" => request}),
+                 registered_redirect_uris: @registered,
+                 request_object_jwks: %{"keys" => [client_jwk]}
+               )
+
+      assert err.error == "invalid_request_object"
+    end
+
+    test "request object validation requires query client_id to match object iss" do
+      {request, client_jwk} =
+        signed_request_object(%{
+          "iss" => "client-A",
+          "aud" => "https://issuer.example",
+          "client_id" => "client-A",
+          "redirect_uri" => @redirect_uri,
+          "response_type" => "code",
+          "scope" => "openid",
+          "code_challenge" => @code_challenge,
+          "code_challenge_method" => "S256"
+        })
+
+      params =
+        base_params(%{
+          "request" => request,
+          "client_id" => "client-B"
+        })
+
+      assert {:error, {:redirect, err}} =
+               AuthorizationRequest.validate(params,
+                 registered_redirect_uris: @registered,
+                 request_object_jwks: %{"keys" => [client_jwk]},
+                 request_object_audience: "https://issuer.example"
+               )
+
+      assert err.error == "invalid_request_object"
     end
 
     test "an out-of-ABNF scope token redirects with invalid_scope" do
