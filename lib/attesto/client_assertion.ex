@@ -25,6 +25,7 @@ defmodule Attesto.ClientAssertion do
   @type verify_opts :: [
           {:now, DateTime.t() | non_neg_integer()}
           | {:max_lifetime, pos_integer()}
+          | {:accepted_algs, [SigningAlg.alg()]}
         ]
 
   @type verify_error ::
@@ -60,6 +61,12 @@ defmodule Attesto.ClientAssertion do
 
   `trusted_jwks` may be an RFC 7517 JWK Set (`%{"keys" => [...]}`), a single
   public JWK map, or a list of public JWK maps.
+
+  Opts:
+
+    * `:accepted_algs` - the JOSE algorithms a candidate trusted key may use.
+      Defaults to `SigningAlg.fapi_algs/0` (PS256, ES256, EdDSA), keeping the
+      FAPI 2 client-authentication gate. A non-FAPI profile can widen this.
   """
   @spec verify(String.t(), String.t(), String.t() | [String.t()], map() | [map()] | map(), verify_opts()) ::
           {:ok, map()} | {:error, verify_error()}
@@ -70,7 +77,7 @@ defmodule Attesto.ClientAssertion do
     with :ok <- check_compact_form(assertion),
          {:ok, header} <- peek_header(assertion),
          :ok <- check_crit(header),
-         {:ok, claims} <- verify_signature(assertion, header, trusted_jwks),
+         {:ok, claims} <- verify_signature(assertion, header, trusted_jwks, opts),
          :ok <- check_client_id(claims, client_id),
          :ok <- check_audience(claims, expected_audience),
          :ok <- check_expiry(claims, opts),
@@ -82,14 +89,16 @@ defmodule Attesto.ClientAssertion do
 
   def verify(_assertion, _client_id, _expected_audience, _trusted_jwks, _opts), do: {:error, :invalid_assertion}
 
-  defp verify_signature(assertion, header, trusted_jwks) do
-    case candidates(trusted_jwks, Map.get(header, "kid")) do
+  defp verify_signature(assertion, header, trusted_jwks, opts) do
+    accepted_algs = Keyword.get(opts, :accepted_algs, SigningAlg.fapi_algs())
+
+    case candidates(trusted_jwks, Map.get(header, "kid"), accepted_algs) do
       [] -> {:error, :invalid_signature}
       jwks -> verify_against_any(jwks, assertion)
     end
   end
 
-  defp candidates(trusted_jwks, header_kid) do
+  defp candidates(trusted_jwks, header_kid, accepted_algs) do
     trusted_jwks
     |> normalize_jwks()
     |> Enum.map(fn jwk_map ->
@@ -97,7 +106,7 @@ defmodule Attesto.ClientAssertion do
       alg = Map.get(jwk_map, "alg") || SigningAlg.infer(jwk)
       {Map.get(jwk_map, "kid"), SigningAlg.validate!(alg), jwk}
     end)
-    |> Enum.filter(fn {_kid, alg, _jwk} -> alg in SigningAlg.fapi_algs() end)
+    |> Enum.filter(fn {_kid, alg, _jwk} -> alg in accepted_algs end)
     |> filter_by_kid(header_kid)
   rescue
     _ -> []

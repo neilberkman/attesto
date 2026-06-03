@@ -3,10 +3,11 @@ defmodule Attesto.SigningAlg do
   Key-derived JOSE signing algorithm helpers.
 
   Attesto treats the algorithm as metadata of the trusted key selected by
-  `kid`, never as policy learned from the presented token. RSA keys default
-  to RS256 for backwards compatibility, while EC/OKP keys infer their JOSE
-  algorithm from the public JWK curve. RSA deployments that intentionally
-  use PS256 can label the key through the keystore's alg metadata.
+  `kid`, never as policy learned from the presented token. RSA keys infer
+  RS256 (RSASSA-PKCS1-v1_5) as the JWA default for the `RSA` key type, while
+  EC/OKP keys infer their JOSE algorithm from the public JWK curve. RSA
+  deployments that intentionally use PS256 can label the key through the
+  keystore's alg metadata.
   """
 
   alias Attesto.Key
@@ -32,6 +33,17 @@ defmodule Attesto.SigningAlg do
   """
   @spec fapi_algs() :: [alg()]
   def fapi_algs, do: @fapi_algs
+
+  @doc """
+  Default set of algorithms accepted for signatures a *client* presents
+  (client assertions and request objects).
+
+  Equal to `fapi_algs/0`: PS256, ES256, EdDSA. A host with a non-FAPI profile
+  can widen this by passing an explicit `:accepted_algs` opt to the relevant
+  verifier; the default keeps the FAPI 2 gate.
+  """
+  @spec default_client_algs() :: [alg()]
+  def default_client_algs, do: @fapi_algs
 
   @doc """
   Resolve the algorithm for a key in `keystore`.

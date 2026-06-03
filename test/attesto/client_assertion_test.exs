@@ -105,4 +105,32 @@ defmodule Attesto.ClientAssertionTest do
     assert {:error, :invalid_signature} =
              ClientAssertion.verify(jwt, @client_id, @audience, %{"keys" => [jwk]})
   end
+
+  test "default :accepted_algs keeps the FAPI set (current behaviour)" do
+    key = ec_key()
+    jwt = assertion(key)
+
+    assert {:ok, _claims} =
+             ClientAssertion.verify(jwt, @client_id, @audience, %{"keys" => [public_jwk(key)]})
+  end
+
+  test "explicitly narrowing :accepted_algs rejects an otherwise-accepted alg" do
+    key = ec_key()
+    jwt = assertion(key)
+
+    assert {:error, :invalid_signature} =
+             ClientAssertion.verify(jwt, @client_id, @audience, %{"keys" => [public_jwk(key)]},
+               accepted_algs: ["EdDSA"]
+             )
+  end
+
+  test "explicit :accepted_algs including the key's alg still verifies" do
+    key = ec_key()
+    jwt = assertion(key)
+
+    assert {:ok, _claims} =
+             ClientAssertion.verify(jwt, @client_id, @audience, %{"keys" => [public_jwk(key)]},
+               accepted_algs: ["ES256"]
+             )
+  end
 end
