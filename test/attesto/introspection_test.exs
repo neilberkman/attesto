@@ -166,5 +166,12 @@ defmodule Attesto.IntrospectionTest do
                refresh_store: StubRefreshStore
              ) == %{"active" => false}
     end
+
+    test "a malformed record missing :consumed is inactive (fail closed)", %{config: config} do
+      now = 1_700_000_000
+      StubRefreshStore.put("refresh-malformed", %{family_id: "fam-1", expires_at: now + 1000, data: %{}})
+
+      assert introspect_refresh(config, "refresh-malformed", now) == %{"active" => false}
+    end
   end
 end

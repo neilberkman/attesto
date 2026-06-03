@@ -115,11 +115,11 @@ defmodule Attesto.Introspection do
     end
   end
 
-  # A refresh token is active only while it is unconsumed and unexpired: a
-  # rotated (consumed) token is spent even though the row lingers for the
-  # rotation grace window, so it must introspect as inactive.
-  defp active_refresh?(%{consumed: true}, _now), do: false
-  defp active_refresh?(%{expires_at: exp}, now) when is_integer(exp), do: exp > now
+  # A refresh token is active only while it is explicitly unconsumed and
+  # unexpired. Fail closed: an entry must carry `consumed: false` and an integer
+  # `expires_at` in the future to be active, so a consumed (rotated) token - or
+  # a malformed record missing `:consumed` - introspects as inactive.
+  defp active_refresh?(%{consumed: false, expires_at: exp}, now) when is_integer(exp), do: exp > now
   defp active_refresh?(_entry, _now), do: false
 
   # Map the verified access-token claims onto the RFC 7662 response members,
