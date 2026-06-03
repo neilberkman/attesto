@@ -111,6 +111,7 @@ defmodule Attesto.Token do
           | {:expected_typ, String.t()}
           | {:dpop_jkt, String.t() | nil}
           | {:mtls_cert_thumbprint, String.t() | nil}
+          | {:require_confirmation_binding, boolean()}
         ]
 
   @type verify_error ::
@@ -284,12 +285,26 @@ defmodule Attesto.Token do
          {:ok, kind} <- check_principal(config, claims),
          :ok <- check_principal_identity_claims(kind, claims),
          :ok <- check_typ(claims, opts),
-         :ok <- check_confirmation_binding(claims, opts) do
+         :ok <- maybe_check_confirmation_binding(claims, opts) do
       {:ok, claims}
     end
   end
 
   def verify(%Config{}, _jwt, _opts), do: {:error, :invalid_token}
+
+  # The sender-constraint confirmation has two independent checks: the `cnf`
+  # *shape* (always enforced in verify/3), and the *binding* - that the
+  # presented proof key matches `cnf` (RFC 9449 §4 / RFC 8705 §3). A caller that
+  # is not the token's presenter - notably token introspection (RFC 9701), which
+  # never holds the proof key - passes `require_confirmation_binding: false` to
+  # skip the binding match while keeping every other check, including `cnf` shape.
+  defp maybe_check_confirmation_binding(claims, opts) do
+    if Keyword.get(opts, :require_confirmation_binding, true) do
+      check_confirmation_binding(claims, opts)
+    else
+      :ok
+    end
+  end
 
   @doc """
   Return a token's claims iff its RS256 signature verifies against a

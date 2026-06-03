@@ -11,18 +11,21 @@ defmodule Attesto.Introspection do
 
   ## What "active" means (RFC 7662 §2.2)
 
-    * **Access tokens** are stateless JWTs: a token is active iff its signature
-      verifies against a keystore key, it was issued by this server (`iss`), and
-      it has not expired. The sender-constraint confirmation (`cnf`) is **not**
-      part of activeness - it governs who may *use* the token, verified when the
-      token is presented, not whether the token is live - so introspection does
-      not require the caller to present the proof key. A sender-constrained
-      token's `cnf` is echoed in the response so a resource server can still
-      check the binding (RFC 7662 / RFC 8705 §3.2 / RFC 9449).
+    * **Access tokens** are stateless JWTs: a token is active iff it passes the
+      full access-token verification (`Attesto.Token.verify/3` - signature,
+      issuer, audience, temporal, required claims, principal, and `typ ==
+      "access"`), the same checks a resource server applies. The ONE check
+      skipped is the sender-constraint **binding** (the proof-key match): the
+      `cnf` is part of who may *use* the token, verified when it is presented,
+      and the introspecting caller holds no proof key - so introspection passes
+      `require_confirmation_binding: false`. The `cnf` *shape* is still
+      validated, and the binding is echoed in the response so a resource server
+      can check it (RFC 7662 / RFC 8705 §3.2 / RFC 9449).
 
     * **Refresh tokens** are opaque, stored secrets whose context is host-owned
-      and opaque to the core, so a refresh token present in the store and not
-      expired is reported active with the minimal `active` member (plus `exp`);
+      and opaque to the core, so a refresh token present in the store,
+      unconsumed, and unexpired is reported active with the minimal `active`
+      member (plus `exp`); a consumed (rotated) or expired one is inactive, and
       its scope/subject are not decoded here.
 
     * Anything else - a malformed token, a forged signature, an expired token,
@@ -79,43 +82,45 @@ defmodule Attesto.Introspection do
     end
   end
 
-  # An access token is active iff its signature verifies (proving this server
-  # issued it, with a pinned algorithm), the `iss` is ours, and it is unexpired.
-  # The confirmation binding is deliberately NOT checked here (see moduledoc).
+  # An access token is active iff it passes the full access-token verification
+  # (signature, issuer, audience, temporal, required claims, principal, and
+  # typ == "access") - the SAME checks the resource-server path applies, so a
+  # wrong-audience, non-access, or otherwise invalid token is inactive. Only the
+  # sender-binding proof match is skipped (the caller is not the token's
+  # presenter and holds no proof key); the `cnf` shape is still validated and
+  # the binding is echoed in the response for the resource server to check.
   defp access_token_response(%Config{} = config, token, opts) do
-    with {:ok, claims} <- Token.peek_signed_claims(config, token),
-         true <- our_token?(config, claims),
-         true <- unexpired?(claims, now(opts)) do
-      rfc7662_response(claims)
+    case Token.verify(config, token, verify_opts(opts)) do
+      {:ok, claims} -> rfc7662_response(claims)
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp verify_opts(opts) do
+    base = [expected_typ: "access", require_confirmation_binding: false]
+
+    case Keyword.fetch(opts, :now) do
+      {:ok, now} -> [{:now, now} | base]
+      :error -> base
+    end
+  end
+
+  defp refresh_token_response(_config, token, opts) do
+    with store when is_atom(store) and not is_nil(store) <- Keyword.get(opts, :refresh_store),
+         {:ok, entry} <- store.get(Secret.hash(token)),
+         true <- active_refresh?(entry, now(opts)) do
+      %{"active" => true, "exp" => entry.expires_at}
     else
       _ -> nil
     end
   end
 
-  defp refresh_token_response(_config, token, opts) do
-    case Keyword.get(opts, :refresh_store) do
-      nil ->
-        nil
-
-      store when is_atom(store) ->
-        case store.get(Secret.hash(token)) do
-          {:ok, %{expires_at: expires_at}} when is_integer(expires_at) ->
-            if expires_at > now(opts), do: %{"active" => true, "exp" => expires_at}
-
-          _ ->
-            nil
-        end
-    end
-  end
-
-  defp our_token?(%Config{issuer: issuer}, claims), do: Map.get(claims, "iss") == issuer
-
-  defp unexpired?(claims, now) do
-    case Map.get(claims, "exp") do
-      exp when is_integer(exp) -> exp > now
-      _ -> false
-    end
-  end
+  # A refresh token is active only while it is unconsumed and unexpired: a
+  # rotated (consumed) token is spent even though the row lingers for the
+  # rotation grace window, so it must introspect as inactive.
+  defp active_refresh?(%{consumed: true}, _now), do: false
+  defp active_refresh?(%{expires_at: exp}, now) when is_integer(exp), do: exp > now
+  defp active_refresh?(_entry, _now), do: false
 
   # Map the verified access-token claims onto the RFC 7662 response members,
   # carrying through only the members that are present. token_type reflects the

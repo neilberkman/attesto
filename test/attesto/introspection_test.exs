@@ -68,6 +68,24 @@ defmodule Attesto.IntrospectionTest do
       assert response["token_type"] == "DPoP"
       assert response["cnf"] == %{"jkt" => jkt}
     end
+
+    test "a refresh-typ JWT is inactive (access-token introspection rejects typ != access)", %{config: config} do
+      now = 1_700_000_000
+      {:ok, %{access_token: refresh_jwt}} = Token.mint(config, client_principal(), now: now, typ: "refresh")
+
+      assert Introspection.introspect(config, refresh_jwt, now: now) == %{"active" => false}
+    end
+
+    test "a token for a different audience is inactive", %{config: config} do
+      now = 1_700_000_000
+      {:ok, %{access_token: jwt}} = Token.mint(config, client_principal(), now: now)
+
+      # A config whose audience differs from the token's aud must not accept it,
+      # matching Token.verify/3's invalid_audience rejection.
+      other = Factory.config(config.keystore.signing_pem(), audience: "https://other.example.com/")
+
+      assert Introspection.introspect(other, jwt, now: now) == %{"active" => false}
+    end
   end
 
   describe "introspect/3 - refresh tokens" do
@@ -95,18 +113,51 @@ defmodule Attesto.IntrospectionTest do
       def put(token, entry), do: :persistent_term.put({__MODULE__, Secret.hash(token)}, entry)
     end
 
-    test "a stored, unexpired refresh token is active (minimal members)", %{config: config} do
+    defp introspect_refresh(config, token, now) do
+      Introspection.introspect(config, token,
+        now: now,
+        refresh_store: StubRefreshStore,
+        token_type_hint: "refresh_token"
+      )
+    end
+
+    test "a stored, unconsumed, unexpired refresh token is active (minimal members)", %{config: config} do
       now = 1_700_000_000
-      StubRefreshStore.put("refresh-xyz", %{family_id: "fam-1", expires_at: now + 1000, data: %{}})
 
-      response =
-        Introspection.introspect(config, "refresh-xyz",
-          now: now,
-          refresh_store: StubRefreshStore,
-          token_type_hint: "refresh_token"
-        )
+      StubRefreshStore.put("refresh-xyz", %{
+        family_id: "fam-1",
+        expires_at: now + 1000,
+        consumed: false,
+        data: %{}
+      })
 
-      assert response == %{"active" => true, "exp" => now + 1000}
+      assert introspect_refresh(config, "refresh-xyz", now) == %{"active" => true, "exp" => now + 1000}
+    end
+
+    test "a consumed (rotated) refresh token is inactive even before it expires", %{config: config} do
+      now = 1_700_000_000
+
+      StubRefreshStore.put("refresh-consumed", %{
+        family_id: "fam-1",
+        expires_at: now + 1000,
+        consumed: true,
+        data: %{}
+      })
+
+      assert introspect_refresh(config, "refresh-consumed", now) == %{"active" => false}
+    end
+
+    test "an expired refresh token is inactive", %{config: config} do
+      now = 1_700_000_000
+
+      StubRefreshStore.put("refresh-expired", %{
+        family_id: "fam-1",
+        expires_at: now - 1,
+        consumed: false,
+        data: %{}
+      })
+
+      assert introspect_refresh(config, "refresh-expired", now) == %{"active" => false}
     end
 
     test "an unknown refresh token is inactive", %{config: config} do
