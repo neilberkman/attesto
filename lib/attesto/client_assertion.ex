@@ -124,19 +124,18 @@ defmodule Attesto.ClientAssertion do
   defp check_client_id(%{"iss" => id, "sub" => id}, id), do: :ok
   defp check_client_id(_claims, _client_id), do: {:error, :invalid_client_id}
 
-  defp check_audience(%{"aud" => aud}, expected) when is_list(expected) do
-    if aud_intersects?(aud, expected), do: :ok, else: {:error, :invalid_audience}
+  # FAPI 2 requires a single-valued string `aud`. An array audience is
+  # rejected even when it contains an accepted value, and the string must
+  # match one of the expected audiences exactly.
+  defp check_audience(%{"aud" => aud}, expected) when is_binary(aud) and is_list(expected) do
+    if aud in expected, do: :ok, else: {:error, :invalid_audience}
   end
 
-  defp check_audience(%{"aud" => aud}, expected) when is_binary(expected) do
-    check_audience(%{"aud" => aud}, [expected])
+  defp check_audience(%{"aud" => aud}, expected) when is_binary(aud) and is_binary(expected) do
+    if aud == expected, do: :ok, else: {:error, :invalid_audience}
   end
 
   defp check_audience(_claims, _expected), do: {:error, :invalid_audience}
-
-  defp aud_intersects?(aud, expected) when is_binary(aud), do: aud in expected
-  defp aud_intersects?(aud, expected) when is_list(aud), do: Enum.any?(aud, &(&1 in expected))
-  defp aud_intersects?(_aud, _expected), do: false
 
   defp check_expiry(%{"exp" => exp}, opts) when is_integer(exp) and exp >= 0 do
     now = unix_now(opts)

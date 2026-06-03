@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-06-02
+
+### Changed
+
+- Require a single-valued string `aud` in client-authentication assertions
+  (FAPI 2). An array `aud` is now rejected even when it contains an accepted
+  value, and the string must match an expected audience exactly.
+
 ## [0.6.9] - 2026-06-02
 
 ### Changed

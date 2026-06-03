@@ -69,6 +69,15 @@ defmodule Attesto.ClientAssertionTest do
              |> ClientAssertion.verify(@client_id, @audience, %{"keys" => [public_jwk(key)]})
   end
 
+  test "rejects an array aud even when it contains the expected audience - FAPI 2 requires a single-valued aud" do
+    key = ec_key()
+
+    assert {:error, :invalid_audience} =
+             key
+             |> assertion(%{"aud" => [@audience, "https://other.example/token"]})
+             |> ClientAssertion.verify(@client_id, @audience, %{"keys" => [public_jwk(key)]})
+  end
+
   test "peek_client_id reads iss without trusting the assertion" do
     key = ec_key()
     assert {:ok, @client_id} = ClientAssertion.peek_client_id(assertion(key))
