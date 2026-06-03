@@ -6,6 +6,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-06-03
+
+### Added
+
+- `Attesto.RequestObject.Policy` — a data-only JAR verification policy for
+  signed authorization request objects (RFC 9101). `generic/0` is the OpenID
+  Connect §6.1 baseline (the default: `nbf`/`exp`/`typ` not required);
+  `fapi_message_signing/0` is the FAPI 2.0 Message Signing §5.3.1 profile
+  (`nbf` required ≤60 min past, `exp` required ≤60 min after `nbf`, JOSE header
+  `typ` = `"oauth-authz-req+jwt"`). `Attesto.AuthorizationRequest.validate/2`
+  accepts a `:request_object_policy` option (default `%Policy{}`, generic) and
+  threads it into `Attesto.RequestObject.verify/3`. An `aud` that is an array
+  containing the issuer is already accepted. Behaviour is unchanged unless a
+  caller opts into the FAPI profile.
+
 ## [0.6.11] - 2026-06-03
 
 ### Added

@@ -48,6 +48,7 @@ defmodule Attesto.AuthorizationRequest do
 
   alias Attesto.PKCE
   alias Attesto.RequestObject
+  alias Attesto.RequestObject.Policy
   alias Attesto.Scope
 
   @response_type_code "code"
@@ -161,6 +162,14 @@ defmodule Attesto.AuthorizationRequest do
       regardless of this flag - presence means the client opted into PKCE, so a
       downgrade is always rejected.
 
+    * `:request_object_policy` (optional, default `%Attesto.RequestObject.Policy{}`)
+      - the JAR verification policy for a signed `request` object (RFC 9101),
+      threaded into `Attesto.RequestObject.verify/3`. The default is the generic
+      OpenID Connect §6.1 baseline (`nbf`/`exp`/`typ` not required). For FAPI 2.0
+      Message Signing §5.3.1 pass `Attesto.RequestObject.Policy.fapi_message_signing/0`
+      and set `:request_object_audience` to the AS issuer. Has no effect unless a
+      `request` object is present.
+
   Returns `{:ok, %Attesto.AuthorizationRequest{}}` or `{:error, error()}`, where
   `error()` is classified per the moduledoc.
 
@@ -184,11 +193,17 @@ defmodule Attesto.AuthorizationRequest do
   end
 
   defp merge_request_object(%{"request" => request} = params, opts) when is_binary(request) and request != "" do
+    policy = Keyword.get(opts, :request_object_policy, %Policy{})
+
     with {:ok, jwks} <- fetch_request_object_jwks(opts),
          {:ok, object_params} <-
-           RequestObject.verify(request, jwks,
-             issuer: Map.get(params, "client_id"),
-             audience: Keyword.get(opts, :request_object_audience)
+           RequestObject.verify(
+             request,
+             jwks,
+             [
+               issuer: Map.get(params, "client_id"),
+               audience: Keyword.get(opts, :request_object_audience)
+             ] ++ Policy.to_verify_opts(policy)
            ) do
       {:ok, object_params}
     else

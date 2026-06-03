@@ -2,9 +2,11 @@ defmodule Attesto.AuthorizationRequestTest do
   use ExUnit.Case, async: true
 
   alias Attesto.AuthorizationRequest
+  alias Attesto.RequestObject.Policy
 
   @redirect_uri "https://client.example.com/cb"
   @registered [@redirect_uri]
+  @issuer "https://issuer.example"
 
   # A syntactically valid S256 code_challenge: BASE64URL(SHA256(verifier)),
   # 43 chars, no padding (RFC 7636 §4.2). This is the RFC 7636 Appendix B
@@ -50,9 +52,46 @@ defmodule Attesto.AuthorizationRequestTest do
     alg = Keyword.get(opts, :alg, "ES256")
     {_, public_map} = JOSE.JWK.to_public_map(jwk)
     client_jwk = Map.merge(public_map, %{"kid" => kid, "alg" => alg})
-    header = %{"alg" => alg, "kid" => kid}
+    header = Map.merge(%{"alg" => alg, "kid" => kid}, Keyword.get(opts, :header, %{}))
     {_, request} = jwk |> JOSE.JWT.sign(header, claims) |> JOSE.JWS.compact()
     {request, client_jwk}
+  end
+
+  # A complete, valid signed-request-object claim set (the object params are
+  # authoritative, so they must carry the whole request). nbf/exp default to a
+  # fresh, FAPI-compliant window; overrides tweak individual claims.
+  defp fapi_request_claims(overrides \\ %{}) do
+    now = System.system_time(:second)
+
+    Map.merge(
+      %{
+        "iss" => "client-123",
+        "aud" => @issuer,
+        "client_id" => "client-123",
+        "redirect_uri" => @redirect_uri,
+        "response_type" => "code",
+        "scope" => "openid",
+        "code_challenge" => @code_challenge,
+        "code_challenge_method" => "S256",
+        "nbf" => now,
+        "exp" => now + 300
+      },
+      overrides
+    )
+  end
+
+  defp validate_request_object(request, client_jwk, opts) do
+    # The outer params carry a registered redirect_uri so a request-object
+    # verification failure is redirectable (RFC 6749 §4.1.2.1); on success the
+    # signed object's params are authoritative and replace these.
+    AuthorizationRequest.validate(
+      %{"request" => request, "client_id" => "client-123", "redirect_uri" => @redirect_uri},
+      [
+        registered_redirect_uris: @registered,
+        request_object_jwks: %{"keys" => [client_jwk]},
+        request_object_audience: @issuer
+      ] ++ opts
+    )
   end
 
   describe "validate/2 success" do
@@ -425,6 +464,93 @@ defmodule Attesto.AuthorizationRequestTest do
       params = base_params() |> Map.delete("nonce")
       assert {:ok, req} = validate(params)
       assert is_nil(req.nonce)
+    end
+  end
+
+  describe "validate/2 request_object_policy (FAPI Message Signing 2.0 §5.3.1)" do
+    @oauth_authz_req_typ %{"typ" => "oauth-authz-req+jwt"}
+
+    test "default policy accepts a signed request object without nbf/exp (generic OIDC §6.1)" do
+      {request, client_jwk} =
+        signed_request_object(Map.drop(fapi_request_claims(), ["nbf", "exp"]))
+
+      assert {:ok, _req} = validate_request_object(request, client_jwk, [])
+    end
+
+    test "FAPI profile accepts a fully compliant request object" do
+      {request, client_jwk} = signed_request_object(fapi_request_claims(), header: @oauth_authz_req_typ)
+
+      assert {:ok, _req} =
+               validate_request_object(request, client_jwk, request_object_policy: Policy.fapi_message_signing())
+    end
+
+    test "FAPI profile rejects a request object missing nbf" do
+      {request, client_jwk} =
+        signed_request_object(Map.delete(fapi_request_claims(), "nbf"), header: @oauth_authz_req_typ)
+
+      assert {:error, {:redirect, err}} =
+               validate_request_object(request, client_jwk, request_object_policy: Policy.fapi_message_signing())
+
+      assert err.error == "invalid_request_object"
+    end
+
+    test "FAPI profile rejects a request object missing exp" do
+      {request, client_jwk} =
+        signed_request_object(Map.delete(fapi_request_claims(), "exp"), header: @oauth_authz_req_typ)
+
+      assert {:error, {:redirect, err}} =
+               validate_request_object(request, client_jwk, request_object_policy: Policy.fapi_message_signing())
+
+      assert err.error == "invalid_request_object"
+    end
+
+    test "FAPI profile rejects an nbf more than 60 minutes in the past" do
+      now = System.system_time(:second)
+
+      {request, client_jwk} =
+        signed_request_object(fapi_request_claims(%{"nbf" => now - 3700, "exp" => now + 300}),
+          header: @oauth_authz_req_typ
+        )
+
+      assert {:error, {:redirect, err}} =
+               validate_request_object(request, client_jwk, request_object_policy: Policy.fapi_message_signing())
+
+      assert err.error == "invalid_request_object"
+    end
+
+    test "FAPI profile rejects a lifetime longer than 60 minutes" do
+      now = System.system_time(:second)
+
+      {request, client_jwk} =
+        signed_request_object(fapi_request_claims(%{"nbf" => now, "exp" => now + 3700}),
+          header: @oauth_authz_req_typ
+        )
+
+      assert {:error, {:redirect, err}} =
+               validate_request_object(request, client_jwk, request_object_policy: Policy.fapi_message_signing())
+
+      assert err.error == "invalid_request_object"
+    end
+
+    test "FAPI profile rejects a typ that is not oauth-authz-req+jwt" do
+      # The default helper produces typ \"JWT\" (JOSE.JWT.sign injects it), which
+      # the strict FAPI pin rejects.
+      {request, client_jwk} = signed_request_object(fapi_request_claims())
+
+      assert {:error, {:redirect, err}} =
+               validate_request_object(request, client_jwk, request_object_policy: Policy.fapi_message_signing())
+
+      assert err.error == "invalid_request_object"
+    end
+
+    test "an aud array containing the issuer is accepted (§5.3.1)" do
+      {request, client_jwk} =
+        signed_request_object(fapi_request_claims(%{"aud" => [@issuer, "https://other.example"]}),
+          header: @oauth_authz_req_typ
+        )
+
+      assert {:ok, _req} =
+               validate_request_object(request, client_jwk, request_object_policy: Policy.fapi_message_signing())
     end
   end
 end
