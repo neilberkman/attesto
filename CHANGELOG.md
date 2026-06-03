@@ -6,6 +6,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-06-03
+
+### Added
+
+- `:accepted_algs` option on `Attesto.ClientAssertion.verify/5` and
+  `Attesto.RequestObject.verify/3` (default `Attesto.SigningAlg.fapi_algs/0`),
+  so the accepted client-authentication / request-object signature algorithms
+  are caller-supplied policy rather than a hardcoded constant. The default
+  preserves current behaviour.
+- Strict JAR policy options on `Attesto.RequestObject.verify/3` for the FAPI
+  Message Signing 2.0 (§5.3.1) / RFC 9101 profile: `:require_nbf`,
+  `:max_nbf_age_seconds`, `:require_exp`, `:max_lifetime_seconds`, and
+  `:accepted_typ` (e.g. `"oauth-authz-req+jwt"`). All default to the prior
+  lenient behaviour, so callers opt into strictness with explicit policy.
+- `Attesto.SigningAlg.default_client_algs/0`.
+
 ## [0.6.10] - 2026-06-02
 
 ### Changed
