@@ -3,9 +3,13 @@ defmodule Attesto.ClusterGuardTest do
   # `assert_single_node!/2` is pure with respect to the test VM: it reads
   # `Node.list/0` and the per-store acknowledgement flag only. The test VM
   # runs single-node (`Node.list() == []`), so every assertion here is in
-  # the un-clustered regime. async: true is safe: the function touches no
-  # shared, named state.
-  use ExUnit.Case, async: true
+  # the un-clustered regime.
+  #
+  # async: false because the "bundled ETS stores boot single-node" describe
+  # block starts the named singletons `Attesto.CodeStore.ETS` and
+  # `Attesto.DPoP.NonceStore.ETS`; running concurrently with other tests that
+  # boot the same named stores races on shared state.
+  use ExUnit.Case, async: false
 
   alias Attesto.ClusterGuard
 

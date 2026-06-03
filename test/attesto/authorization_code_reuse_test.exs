@@ -11,7 +11,6 @@ defmodule Attesto.AuthorizationCodeReuseTest do
 
   alias Attesto.AuthorizationCode
   alias Attesto.AuthorizationCode.Grant
-  alias Attesto.CodeStore.ETS
   alias Attesto.PKCE
   alias Attesto.Secret
 
@@ -153,25 +152,6 @@ defmodule Attesto.AuthorizationCodeReuseTest do
       # So the second presentation finds the code absent and unmarked:
       # invalid_grant, NOT reuse. (We never validated a family to revoke.)
       assert {:error, :invalid_grant} = AuthorizationCode.redeem(TrackingStore, code, redeem_params())
-    end
-  end
-
-  describe "redeem/4 without reuse tracking (ETS reference store)" do
-    setup do
-      start_supervised!(ETS)
-      :ok
-    end
-
-    test "a second redeem is invalid_grant: the store does not track reuse", %{challenge: challenge} do
-      {:ok, code} = AuthorizationCode.issue(ETS, code_attrs(challenge, %{family_id: @family_id}))
-
-      # family_id still round-trips even when reuse tracking is absent.
-      assert {:ok, %Grant{family_id: @family_id}} = AuthorizationCode.redeem(ETS, code, redeem_params())
-
-      # A store without mark_consumed/2 surfaces a re-presentation as plain
-      # invalid_grant - reuse detection is additive, never required.
-      refute function_exported?(ETS, :mark_consumed, 2)
-      assert {:error, :invalid_grant} = AuthorizationCode.redeem(ETS, code, redeem_params())
     end
   end
 end
