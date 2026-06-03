@@ -249,6 +249,19 @@ defmodule Attesto.AuthorizationRequestTest do
       assert err.state == "xyz"
     end
 
+    test "the required-request-object error stays non-redirectable when client_id is untrusted" do
+      # OIDC Core §3.1.2.6: even though the policy requires a signed request
+      # object, a missing client_id is non-redirectable - the supplied
+      # redirect_uri cannot be trusted, so this must NOT redirect.
+      params = base_params() |> Map.delete("client_id")
+
+      assert {:error, {:direct, :invalid_client_id}} =
+               AuthorizationRequest.validate(params,
+                 registered_redirect_uris: @registered,
+                 request_object_policy: Policy.fapi_message_signing()
+               )
+    end
+
     test "unsigned request object is rejected as unsupported" do
       request =
         unsigned_request_object(%{

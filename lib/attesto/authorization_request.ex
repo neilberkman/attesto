@@ -223,14 +223,26 @@ defmodule Attesto.AuthorizationRequest do
     policy = Keyword.get(opts, :request_object_policy, %Policy{})
 
     if Policy.require_request_object?(policy) do
+      require_present_request_object(params, opts)
+    else
+      {:ok, params}
+    end
+  end
+
+  # OIDC Core §3.1.2.6: the "a signed request object is required" error is only
+  # redirectable once the client identity is trusted. A missing/invalid
+  # client_id is non-redirectable - validate_client_id/1 classifies it as
+  # {:direct, :invalid_client_id}, and merge runs before that check, so it is
+  # made here too. Only with a usable client_id (and a registered redirect_uri,
+  # which redirect_request_object_error/4 verifies) is the error redirected.
+  defp require_present_request_object(params, opts) do
+    with {:ok, _client_id} <- validate_client_id(params) do
       redirect_request_object_error(
         params,
         "invalid_request",
         "a signed request object is required",
         opts
       )
-    else
-      {:ok, params}
     end
   end
 
