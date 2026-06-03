@@ -54,8 +54,9 @@ defmodule Attesto.RequestObject do
       Defaults to `nil` (no lower bound).
     * `:require_exp` - when `true`, reject an object without an `exp` claim.
       Defaults to `false`.
-    * `:max_lifetime_seconds` - when set and `nbf` is present, reject an `exp`
-      greater than `nbf + N`. Defaults to `nil` (no lifetime bound).
+    * `:max_lifetime_seconds` - when set, require valid `nbf` and `exp`
+      NumericDate anchors and reject an `exp` greater than `nbf + N`. Defaults
+      to `nil` (no lifetime bound).
     * `:accepted_typ` - when a list, require the JOSE header `typ` to be a
       member; `nil` in the list permits an absent `typ`. Defaults to `nil`,
       which accepts any `typ` including its absence.

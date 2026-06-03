@@ -28,7 +28,7 @@ defmodule Attesto.AuthorizationCodeReuseETSTest do
     %{challenge: challenge}
   end
 
-  defp code_attrs(challenge, overrides \\ %{}) do
+  defp code_attrs(challenge, overrides) do
     Map.merge(
       %{
         client_id: @client_id,

@@ -15,6 +15,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so the accepted client-authentication / request-object signature algorithms
   are caller-supplied policy rather than a hardcoded constant. The default
   preserves current behaviour.
+- `Attesto.SigningAlg.default_client_algs/0` as a named helper for the default
+  client-presented signature verification policy.
 - Strict JAR policy options on `Attesto.RequestObject.verify/3` for the FAPI
   Message Signing 2.0 (§5.3.1) / RFC 9101 profile: `:require_nbf`,
   `:max_nbf_age_seconds`, `:require_exp`, `:max_lifetime_seconds`, and
@@ -29,7 +31,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `Attesto.RequestObject.verify/3` now honours `nbf` as a not-before claim
   (RFC 7519 §4.1.5): a request object with `nbf` in the future is rejected as
   `:not_yet_valid` even in lenient mode (clock skew tolerated).
-- `Attesto.SigningAlg.default_client_algs/0`.
 
 ## [0.6.10] - 2026-06-02
 
