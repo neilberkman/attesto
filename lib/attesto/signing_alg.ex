@@ -67,6 +67,28 @@ defmodule Attesto.SigningAlg do
     validate!(alg)
   end
 
+  @doc """
+  The unique signing algorithms across a keystore's verification keys.
+
+  Used to advertise the algorithms the server itself signs with (the
+  `id_token_signing_alg_values_supported` and the JARM
+  `authorization_signing_alg_values_supported`, which share the same keys).
+  Returns `[]` when the keystore exposes no verification keys (or resolution
+  fails), leaving the caller to apply any default.
+  """
+  @spec keystore_algs(module()) :: [alg()]
+  def keystore_algs(keystore) when is_atom(keystore) do
+    if exports?(keystore, :verification_pems, 0) do
+      keystore.verification_pems()
+      |> Enum.map(&for_key(keystore, &1))
+      |> Enum.uniq()
+    else
+      []
+    end
+  rescue
+    _ -> []
+  end
+
   @doc "Infer the default algorithm from a parsed JWK's public members."
   @spec infer(JOSE.JWK.t()) :: alg()
   def infer(%JOSE.JWK{} = jwk) do
