@@ -283,6 +283,36 @@ defmodule Attesto.AuthorizationRequestTest do
                )
     end
 
+    test "a trusted redirectable error carries response_mode and client_id (JARM context)" do
+      # The transport needs the requested response_mode and the audience to
+      # return the error as a signed JWT (JARM §2.3); the core attaches them once
+      # the client is trusted.
+      assert {:error, {:redirect, err}} =
+               validate(base_params(%{"scope" => ~s(open"id), "response_mode" => "query.jwt"}))
+
+      assert err.error == "invalid_scope"
+      assert err.response_mode == "query.jwt"
+      assert err.client_id == "client-123"
+    end
+
+    test "a request-object error carries response_mode and client_id once the client is trusted" do
+      # The HIGH-severity gap: request-object failures are produced before
+      # validate_redirectable, so they must attach the JARM context themselves.
+      assert {:error, {:redirect, err}} =
+               validate(base_params(%{"request" => "bad.jwt.sig", "response_mode" => "query.jwt"}))
+
+      assert err.error == "invalid_request_object"
+      assert err.response_mode == "query.jwt"
+      assert err.client_id == "client-123"
+    end
+
+    test "a request-object error with an untrusted client_id stays non-redirectable" do
+      params = base_params(%{"request" => "bad.jwt.sig"}) |> Map.delete("client_id")
+
+      assert {:error, {:direct, :invalid_client_id}} =
+               validate(params)
+    end
+
     test "unsigned request object is rejected as unsupported" do
       request =
         unsigned_request_object(%{

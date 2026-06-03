@@ -258,38 +258,34 @@ defmodule Attesto.AuthorizationRequest do
     end
   end
 
-  # OIDC Core §3.1.2.6: the "a signed request object is required" error is only
-  # redirectable once the client identity is trusted. A missing/invalid
-  # client_id is non-redirectable - validate_client_id/1 classifies it as
-  # {:direct, :invalid_client_id}, and merge runs before that check, so it is
-  # made here too. Only with a usable client_id (and a registered redirect_uri,
-  # which redirect_request_object_error/4 verifies) is the error redirected.
+  # FAPI 2.0 Message Signing §5.3.1: a required-but-absent request object is a
+  # redirectable invalid_request once the client is trusted, classified entirely
+  # by redirect_request_object_error/4 below.
   defp require_present_request_object(params, opts) do
-    with {:ok, _client_id} <- validate_client_id(params) do
-      redirect_request_object_error(
-        params,
-        "invalid_request",
-        "a signed request object is required",
-        opts
-      )
-    end
+    redirect_request_object_error(
+      params,
+      "invalid_request",
+      "a signed request object is required",
+      opts
+    )
   end
 
+  # A request-object failure (invalid object, or a required one absent) is only
+  # redirectable once the client is trusted: OIDC Core §3.1.2.6 keeps a
+  # missing/invalid client_id or an unregistered redirect_uri non-redirectable
+  # (direct). Once both are trusted, enrich the error with the requested JARM
+  # response_mode and the client_id audience (JARM §2.3 / §5.4) so the transport
+  # can return the error as a signed JWT, exactly as validate_redirectable/5
+  # does for the checks it owns. response_mode is read from the top-level
+  # parameters: an invalid object's signed contents are untrusted, so a mode
+  # carried only inside it is unknowable and the transport falls back to query.
   defp redirect_request_object_error(params, error, description, opts) do
-    case validate_redirect_uri(params, Keyword.fetch!(opts, :registered_redirect_uris)) do
-      {:ok, redirect_uri} ->
-        state = string_or_nil(Map.get(params, "state"))
-
-        {:error,
-         redirect_error(
-           error,
-           description,
-           redirect_uri,
-           state
-         )}
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, client_id} <- validate_client_id(params),
+         {:ok, redirect_uri} <-
+           validate_redirect_uri(params, Keyword.fetch!(opts, :registered_redirect_uris)) do
+      state = string_or_nil(Map.get(params, "state"))
+      {:redirect, base} = redirect_error(error, description, redirect_uri, state)
+      {:error, {:redirect, Map.merge(base, redirect_error_context(params, client_id))}}
     end
   end
 
