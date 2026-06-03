@@ -18,8 +18,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Strict JAR policy options on `Attesto.RequestObject.verify/3` for the FAPI
   Message Signing 2.0 (§5.3.1) / RFC 9101 profile: `:require_nbf`,
   `:max_nbf_age_seconds`, `:require_exp`, `:max_lifetime_seconds`, and
-  `:accepted_typ` (e.g. `"oauth-authz-req+jwt"`). All default to the prior
-  lenient behaviour, so callers opt into strictness with explicit policy.
+  `:accepted_typ` (e.g. `"oauth-authz-req+jwt"`). `:require_nbf`/`:require_exp`
+  demand a non-negative integer NumericDate (a missing or malformed value
+  fails); `:max_lifetime_seconds` requires both `nbf` and `exp` anchors. These
+  default to the prior lenient behaviour, so callers opt into strictness with
+  explicit policy.
+
+### Fixed
+
+- `Attesto.RequestObject.verify/3` now honours `nbf` as a not-before claim
+  (RFC 7519 §4.1.5): a request object with `nbf` in the future is rejected as
+  `:not_yet_valid` even in lenient mode (clock skew tolerated).
 - `Attesto.SigningAlg.default_client_algs/0`.
 
 ## [0.6.10] - 2026-06-02

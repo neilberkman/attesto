@@ -138,6 +138,39 @@ defmodule Attesto.RequestObjectTest do
       assert {:ok, _params} =
                RequestObject.verify(jwt, %{"keys" => [public_jwk(key)]}, base_opts() ++ [now: now])
     end
+
+    test "rejects a future nbf even without require_nbf (RFC 7519 §4.1.5 not-before)" do
+      key = ec_key()
+      now = System.system_time(:second)
+      jwt = request_object(key, %{"nbf" => now + 600})
+
+      assert {:error, :not_yet_valid} =
+               RequestObject.verify(jwt, %{"keys" => [public_jwk(key)]}, base_opts() ++ [now: now])
+    end
+
+    test "require_nbf rejects a non-integer nbf" do
+      key = ec_key()
+      jwt = request_object(key, %{"nbf" => "soon"})
+
+      assert {:error, :not_yet_valid} =
+               RequestObject.verify(
+                 jwt,
+                 %{"keys" => [public_jwk(key)]},
+                 base_opts() ++ [require_nbf: true]
+               )
+    end
+
+    test "require_nbf rejects a negative nbf" do
+      key = ec_key()
+      jwt = request_object(key, %{"nbf" => -1})
+
+      assert {:error, :not_yet_valid} =
+               RequestObject.verify(
+                 jwt,
+                 %{"keys" => [public_jwk(key)]},
+                 base_opts() ++ [require_nbf: true]
+               )
+    end
   end
 
   describe ":require_exp and :max_lifetime_seconds" do
@@ -194,6 +227,56 @@ defmodule Attesto.RequestObjectTest do
 
       assert {:ok, _params} =
                RequestObject.verify(jwt, %{"keys" => [public_jwk(key)]}, base_opts() ++ [now: now])
+    end
+
+    test "require_exp rejects a non-integer exp" do
+      key = ec_key()
+      jwt = request_object(key, %{"exp" => "later"})
+
+      assert {:error, :expired} =
+               RequestObject.verify(
+                 jwt,
+                 %{"keys" => [public_jwk(key)]},
+                 base_opts() ++ [require_exp: true]
+               )
+    end
+
+    test "require_exp rejects a negative exp" do
+      key = ec_key()
+      jwt = request_object(key, %{"exp" => -1})
+
+      assert {:error, :expired} =
+               RequestObject.verify(
+                 jwt,
+                 %{"keys" => [public_jwk(key)]},
+                 base_opts() ++ [require_exp: true]
+               )
+    end
+
+    test "max_lifetime_seconds rejects a missing nbf (the bound needs both anchors)" do
+      key = ec_key()
+      now = System.system_time(:second)
+      jwt = request_object(key, %{"exp" => now + 30})
+
+      assert {:error, :expired} =
+               RequestObject.verify(
+                 jwt,
+                 %{"keys" => [public_jwk(key)]},
+                 base_opts() ++ [max_lifetime_seconds: 60, now: now]
+               )
+    end
+
+    test "max_lifetime_seconds rejects a missing exp (the bound needs both anchors)" do
+      key = ec_key()
+      now = System.system_time(:second)
+      jwt = sign_without(key, "exp")
+
+      assert {:error, :expired} =
+               RequestObject.verify(
+                 jwt,
+                 %{"keys" => [public_jwk(key)]},
+                 base_opts() ++ [max_lifetime_seconds: 60, now: now]
+               )
     end
   end
 

@@ -161,46 +161,76 @@ defmodule Attesto.RequestObject do
   defp check_iat(%{"iat" => _}, _opts), do: {:error, :not_yet_valid}
   defp check_iat(_claims, _opts), do: :ok
 
-  # RFC 9101 / FAPI Message Signing 2.0 §5.3.1: a strict-JAR profile may
-  # require `nbf` and bound how stale it is. Defaults (no require, no age
-  # bound) leave the lenient JAR/OIDC §6.1 behaviour intact: `nbf` is ignored.
+  # RFC 7519 §4.1.5 not-before + RFC 9101 / FAPI Message Signing 2.0 §5.3.1
+  # strict-JAR policy. Whenever `nbf` is present as a NumericDate it must not
+  # be in the future (clock skew tolerated) - a not-yet-valid request object is
+  # rejected even in lenient mode. `require_nbf: true` additionally demands that
+  # `nbf` be present and a non-negative integer NumericDate; a missing or
+  # malformed value (e.g. a string) fails. `max_nbf_age_seconds` bounds how
+  # stale a present `nbf` may be. Defaults (no require, no age bound) leave the
+  # lenient JAR/OIDC §6.1 behaviour intact apart from honouring a present `nbf`.
   defp check_nbf(claims, opts) do
+    nbf = Map.get(claims, "nbf")
+
     cond do
-      require_nbf?(opts) and not Map.has_key?(claims, "nbf") ->
-        {:error, :not_yet_valid}
-
-      nbf_too_old?(claims, Keyword.get(opts, :max_nbf_age_seconds), unix_now(opts)) ->
-        {:error, :not_yet_valid}
-
-      true ->
-        :ok
+      require_nbf?(opts) and not numericdate?(nbf) -> {:error, :not_yet_valid}
+      nbf_in_future?(nbf, opts) -> {:error, :not_yet_valid}
+      nbf_too_old?(nbf, opts) -> {:error, :not_yet_valid}
+      true -> :ok
     end
   end
 
   defp require_nbf?(opts), do: Keyword.get(opts, :require_nbf, false) == true
 
-  defp nbf_too_old?(%{"nbf" => nbf}, max_age, now)
-       when is_integer(nbf) and nbf >= 0 and is_integer(max_age) and max_age > 0, do: nbf < now - max_age
+  defp nbf_in_future?(nbf, opts) when is_integer(nbf), do: nbf > unix_now(opts) + @clock_skew_seconds
 
-  defp nbf_too_old?(_claims, _max_age, _now), do: false
+  defp nbf_in_future?(_nbf, _opts), do: false
 
-  # RFC 9101 / FAPI Message Signing 2.0 §5.3.1: optionally require `exp` and
-  # bound the object's lifetime relative to `nbf`. Defaults are no-ops.
+  defp nbf_too_old?(nbf, opts) when is_integer(nbf) do
+    case Keyword.get(opts, :max_nbf_age_seconds) do
+      max when is_integer(max) and max > 0 -> nbf < unix_now(opts) - max
+      _ -> false
+    end
+  end
+
+  defp nbf_too_old?(_nbf, _opts), do: false
+
+  # RFC 7519 §4.1.4 expiry + RFC 9101 / FAPI Message Signing 2.0 §5.3.1: under
+  # `require_exp: true`, `exp` must be present and a non-negative integer
+  # NumericDate (a missing or malformed value fails). `max_lifetime_seconds`
+  # bounds `exp - nbf`; because the bound is meaningless without both anchors,
+  # under that policy a missing or malformed `nbf`/`exp` is itself a failure
+  # (it MUST be paired with `require_nbf: true`/`require_exp: true` in practice).
+  # The basic "exp in the past" rejection lives in `check_expiry/2`. Defaults
+  # (no require, no lifetime bound) are no-ops.
   defp check_lifetime(claims, opts) do
+    exp = Map.get(claims, "exp")
+    nbf = Map.get(claims, "nbf")
+
     cond do
-      require_exp?(opts) and not Map.has_key?(claims, "exp") -> {:error, :expired}
-      exp_beyond_lifetime?(claims, Keyword.get(opts, :max_lifetime_seconds)) -> {:error, :expired}
+      require_exp?(opts) and not numericdate?(exp) -> {:error, :expired}
+      lifetime_exceeded?(exp, nbf, opts) -> {:error, :expired}
       true -> :ok
     end
   end
 
   defp require_exp?(opts), do: Keyword.get(opts, :require_exp, false) == true
 
-  defp exp_beyond_lifetime?(%{"exp" => exp, "nbf" => nbf}, max_lifetime)
-       when is_integer(exp) and is_integer(nbf) and is_integer(max_lifetime) and max_lifetime > 0,
-       do: exp > nbf + max_lifetime
+  # When `max_lifetime_seconds` is set, the bound needs both NumericDate
+  # anchors; a missing or malformed `nbf`/`exp` is itself a failure.
+  defp lifetime_exceeded?(exp, nbf, opts) do
+    case Keyword.get(opts, :max_lifetime_seconds) do
+      max when is_integer(max) and max > 0 -> not within_lifetime?(exp, nbf, max)
+      _ -> false
+    end
+  end
 
-  defp exp_beyond_lifetime?(_claims, _max_lifetime), do: false
+  defp within_lifetime?(exp, nbf, max) when is_integer(exp) and is_integer(nbf), do: exp <= nbf + max
+
+  defp within_lifetime?(_exp, _nbf, _max), do: false
+
+  # A JWT NumericDate (RFC 7519 §2): a non-negative integer count of seconds.
+  defp numericdate?(value), do: is_integer(value) and value >= 0
 
   defp claims_to_params(claims) do
     claims
