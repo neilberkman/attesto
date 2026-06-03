@@ -163,6 +163,18 @@ defmodule Attesto.AuthorizationRequestTest do
       assert is_nil(req.max_age)
       assert req.claims == %{}
     end
+
+    test "response_mode is nil when absent (transport applies the default)" do
+      assert {:ok, req} = validate(base_params())
+      assert is_nil(req.response_mode)
+    end
+
+    test "carries a supported response_mode through (JARM §2.3)" do
+      for mode <- AuthorizationRequest.supported_response_modes() do
+        assert {:ok, req} = validate(base_params(%{"response_mode" => mode}))
+        assert req.response_mode == mode
+      end
+    end
   end
 
   describe "validate/2 non-redirectable errors (OIDC Core §3.1.2.6)" do
@@ -243,6 +255,15 @@ defmodule Attesto.AuthorizationRequestTest do
                  registered_redirect_uris: @registered,
                  request_object_policy: Policy.fapi_message_signing()
                )
+
+      assert err.error == "invalid_request"
+      assert err.redirect_uri == @redirect_uri
+      assert err.state == "xyz"
+    end
+
+    test "an unsupported response_mode redirects with invalid_request" do
+      assert {:error, {:redirect, err}} =
+               validate(base_params(%{"response_mode" => "form_post"}))
 
       assert err.error == "invalid_request"
       assert err.redirect_uri == @redirect_uri

@@ -55,6 +55,16 @@ defmodule Attesto.AuthorizationRequest do
   @openid_scope "openid"
   @plain_method "plain"
 
+  # OAuth 2.0 Multiple Response Type Encoding Practices + JWT Secured
+  # Authorization Response Mode (JARM §2.3): the response modes this
+  # authorization-code server supports. `query` is the RFC 6749 default; the
+  # JARM modes (`jwt`, and the `.jwt`-suffixed variants) return the response as
+  # a single signed JWT (FAPI 2.0 Message Signing §5.4). `jwt` is the shorthand
+  # for the response_type's default JWT mode, which for `code` is `query.jwt`
+  # (JARM §2.3.2). Plain `fragment`/`form_post` are intentionally unsupported -
+  # the code flow returns its parameters in the query, signed or not.
+  @supported_response_modes ["query", "jwt", "query.jwt", "fragment.jwt", "form_post.jwt"]
+
   # OIDC Core §3.1.2.1: the complete, fixed set of prompt values. Any token
   # outside this set is an invalid_request.
   @prompt_values ["none", "login", "consent", "select_account"]
@@ -87,7 +97,8 @@ defmodule Attesto.AuthorizationRequest do
           prompt: [String.t()],
           max_age: non_neg_integer() | nil,
           claims: map(),
-          acr_values: [String.t()]
+          acr_values: [String.t()],
+          response_mode: String.t() | nil
         }
 
   # `code_challenge`/`code_challenge_method` are NOT enforced keys: PKCE is
@@ -113,7 +124,8 @@ defmodule Attesto.AuthorizationRequest do
     acr_values: [],
     openid?: false,
     prompt: [],
-    scope: []
+    scope: [],
+    response_mode: nil
   ]
 
   @typedoc "A redirectable authorization error (RFC 6749 §4.1.2.1)."
@@ -191,6 +203,14 @@ defmodule Attesto.AuthorizationRequest do
       validate_redirectable(params, client_id, redirect_uri, require_nonce, require_pkce)
     end
   end
+
+  @doc """
+  The response modes this authorization-code server accepts (OAuth 2.0 Response
+  Modes / JARM §2.3): `query` and the JARM JWT modes. Exposed so the discovery
+  document advertises exactly what `validate/2` enforces.
+  """
+  @spec supported_response_modes() :: [String.t()]
+  def supported_response_modes, do: @supported_response_modes
 
   defp merge_request_object(%{"request" => request} = params, opts) when is_binary(request) and request != "" do
     policy = Keyword.get(opts, :request_object_policy, %Policy{})
@@ -321,7 +341,8 @@ defmodule Attesto.AuthorizationRequest do
          {:ok, max_age} <- validate_max_age(params, redirect_uri, state),
          {:ok, prompt} <- validate_prompt(params, redirect_uri, state),
          {:ok, claims} <- validate_claims(params, redirect_uri, state),
-         {:ok, nonce} <- validate_nonce(params, require_nonce, redirect_uri, state) do
+         {:ok, nonce} <- validate_nonce(params, require_nonce, redirect_uri, state),
+         {:ok, response_mode} <- validate_response_mode(params, redirect_uri, state) do
       {:ok,
        %__MODULE__{
          response_type: @response_type_code,
@@ -336,8 +357,32 @@ defmodule Attesto.AuthorizationRequest do
          prompt: prompt,
          max_age: max_age,
          claims: claims,
-         acr_values: parse_space_list(Map.get(params, "acr_values"))
+         acr_values: parse_space_list(Map.get(params, "acr_values")),
+         response_mode: response_mode
        }}
+    end
+  end
+
+  # OAuth 2.0 Response Modes / JARM §2.3: response_mode is OPTIONAL; absent means
+  # the response_type's default (`query` for code), surfaced here as nil so the
+  # transport applies its default. A supported value is carried through; an
+  # unsupported or non-string value is a redirectable invalid_request.
+  defp validate_response_mode(params, redirect_uri, state) do
+    case Map.get(params, "response_mode") do
+      nil ->
+        {:ok, nil}
+
+      mode when mode in @supported_response_modes ->
+        {:ok, mode}
+
+      _ ->
+        {:error,
+         redirect_error(
+           "invalid_request",
+           "unsupported response_mode",
+           redirect_uri,
+           state
+         )}
     end
   end
 
