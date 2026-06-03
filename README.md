@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/XukuLLC/attesto/blob/main/LICENSE)
 [![Elixir](https://img.shields.io/badge/elixir-%E2%89%A5%201.18-purple)](https://elixir-lang.org)
 
-A vendor-neutral [OAuth 2.0](https://oauth.net/2/) / [OpenID Connect](https://openid.net/developers/how-connect-works/) engine for Elixir APIs that need modern token security, with first-class support for sender-constrained access tokens: [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) and mutual TLS.
+A vendor-neutral [OAuth 2.0](https://oauth.net/2/) / [OpenID Connect](https://openid.net/developers/how-connect-works/) engine for Elixir APIs that need modern token security, with first-class support for sender-constrained access tokens: [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) and mutual TLS. It also provides the conn-free protocol pieces for JAR, JARM, token introspection, and FAPI 2.0 Message Signing.
 
 ## Where it fits
 
@@ -30,6 +30,7 @@ Use it when you need to:
 2. Issue tokens from your own authorization server. Attesto provides the
    protocol pieces: JWT access tokens, ID tokens, JWKS/key handling, DPoP,
    mutual-TLS binding, authorization-code helpers, refresh-token rotation,
+   signed authorization requests, JARM response JWTs, token introspection,
    scope algebra, and OAuth error/challenge helpers. Machine-to-machine access
    can use OAuth client credentials with short-lived scoped tokens instead of
    long-lived API keys. Transport and persistence remain separate;
@@ -58,6 +59,8 @@ this package: endpoints, router helpers, and Ecto-backed stores wired together.
   - [Configure once](#configure-once)
   - [Mint and verify a token](#mint-and-verify-a-token)
   - [Sender-constrain a token to a DPoP key](#sender-constrain-a-token-to-a-dpop-key)
+  - [Authorization request and response JWTs](#authorization-request-and-response-jwts)
+  - [Token introspection](#token-introspection)
   - [Match scopes](#match-scopes)
 - [What you supply / what's in the box](#what-you-supply--whats-in-the-box)
 - [RFC coverage](#rfc-coverage)
@@ -164,6 +167,58 @@ Pass a JWK thumbprint at issue time, then verify the proof and the binding toget
 
 A DPoP- or mTLS-bound token presented without (or with a mismatched) proof is rejected, and a proof presented against a token that is not bound that way is rejected too.
 
+### Authorization request and response JWTs
+
+Attesto verifies signed authorization request objects (JAR / RFC 9101) and can
+build signed authorization responses (JARM). Profile policy is explicit data:
+the generic defaults stay broadly OpenID-compatible, while
+`Attesto.RequestObject.Policy.fapi_message_signing/0` applies the FAPI 2.0
+Message Signing request-object rules.
+
+```elixir
+policy = Attesto.RequestObject.Policy.fapi_message_signing()
+
+{:ok, request_claims} =
+  Attesto.RequestObject.verify(request_jwt, client_jwks,
+    [issuer: client_id, audience: config.issuer] ++
+      Attesto.RequestObject.Policy.to_verify_opts(policy)
+  )
+
+{:ok, response_jwt} =
+  Attesto.JARM.response_jwt(config, client_id, %{
+    "code" => code,
+    "state" => state
+  })
+```
+
+`Attesto.AuthorizationRequest.validate/2` accepts `:request_object_policy`,
+`:request_object_jwks`, and `:request_object_audience` options so a transport
+layer can enforce request-object policy while keeping controller code thin.
+
+### Token introspection
+
+`Attesto.Introspection` implements the RFC 7662 active-token decision without
+owning an HTTP endpoint. Access tokens are introspected with the same verifier
+used by resource servers, except the sender-binding proof match is skipped so
+the response can echo `cnf` for the resource server to enforce. Refresh tokens
+are active only while present, unconsumed, and unexpired in the configured
+`Attesto.RefreshStore`.
+
+```elixir
+response =
+  Attesto.Introspection.introspect(config, token,
+    refresh_store: MyApp.RefreshStore,
+    token_type_hint: "access_token"
+  )
+
+{:ok, signed_response} =
+  Attesto.SignedIntrospection.response_jwt(config, resource_server_id, response)
+```
+
+The signed response helper emits the RFC 9701
+`application/token-introspection+jwt` payload; the HTTP endpoint and content
+negotiation belong to the host or integration layer.
+
 ### Match scopes
 
 ```elixir
@@ -185,7 +240,8 @@ Attesto.Scope.grants_all?(catalog, ["documents.read"], ["documents.write"])
 | Authorization policy ("may this principal do X?") | DPoP proof verification + replay protection (`Attesto.DPoP`) |
 | HTTP layer, routing, plugs | mTLS certificate-binding checks (`Attesto.MTLS`) |
 | Persistence, sessions, IdP integration | Scope grant-form matching (`Attesto.Scope`) |
-| Issuer / audience values (`Attesto.Config`) | Canonical SHA-256 thumbprints (`Attesto.Thumbprint`) |
+| Issuer / audience values (`Attesto.Config`) | JAR, JARM, and introspection primitives |
+| Client stores, PAR stores, endpoint rendering | Canonical SHA-256 thumbprints (`Attesto.Thumbprint`) |
 
 If a decision depends on your business rules, it is yours. If it is a wire-format or cryptographic check defined by an RFC, it is Attesto's.
 
@@ -209,6 +265,11 @@ If a decision depends on your business rules, it is yours. If it is a wire-forma
 | RFC 7009 | Token Revocation (refresh-token family) | Supported |
 | RFC 9449 §8 | DPoP server-issued nonce | Supported |
 | RFC 9068 | JWT access-token `typ: "at+jwt"` header | Supported |
+| RFC 9101 | JWT Secured Authorization Request (JAR) | Supported |
+| JARM | JWT Secured Authorization Response Mode | Supported |
+| RFC 7662 | OAuth 2.0 Token Introspection | Core primitive |
+| RFC 9701 | JWT Response for OAuth Token Introspection | Core primitive |
+| FAPI 2.0 Message Signing | JAR/JARM/signed introspection primitives | Core primitives |
 
 ## Plug integration (optional)
 
@@ -256,7 +317,7 @@ constraint.
 
 ## Status
 
-A `0.x` release: still pre-1.0, so the API may change between minor versions (read the CHANGELOG before upgrading). Implemented and tested: token issue/verify, DPoP, mTLS, scope, keystore, PKCE validation, JWKS publication, OIDC discovery, the authorization-code grant (single-use, optionally DPoP-bound), refresh-token rotation with reuse detection, and token revocation (RFC 7009, refresh-token family). The stateful grants run against the `Attesto.CodeStore` / `Attesto.RefreshStore` behaviours, with ETS reference implementations included; a production host implements those over its own database (the atomic-`take` and atomic-`consume` contracts are documented). Cross-language parity tests check Attesto-issued artifacts against a reference implementation in another language. Pin to `~> 0.6`.
+A `0.x` release: still pre-1.0, so the API may change between minor versions (read the CHANGELOG before upgrading). Implemented and tested: token issue/verify, DPoP, mTLS, scope, keystore, PKCE validation, JWKS publication, OIDC discovery, the authorization-code grant (single-use, optionally DPoP-bound), refresh-token rotation with reuse detection, token revocation (RFC 7009, refresh-token family), signed request-object policy, JARM response signing, token introspection, and signed introspection response JWTs. The stateful grants run against the `Attesto.CodeStore` / `Attesto.RefreshStore` behaviours, with ETS reference implementations included; a production host implements those over its own database (the atomic-`take` and atomic-`consume` contracts are documented). Cross-language parity tests check Attesto-issued artifacts against a reference implementation in another language. Pin to `~> 0.6`.
 
 ## Development
 
