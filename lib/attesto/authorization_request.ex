@@ -128,12 +128,21 @@ defmodule Attesto.AuthorizationRequest do
     response_mode: nil
   ]
 
-  @typedoc "A redirectable authorization error (RFC 6749 §4.1.2.1)."
+  @typedoc """
+  A redirectable authorization error (RFC 6749 §4.1.2.1).
+
+  Errors raised once the client is trusted (from `validate_redirectable/5`) also
+  carry `:response_mode` (the requested JARM mode, or `nil`) and `:client_id`,
+  so the transport can return the error in the requested response mode
+  (JARM §2.3); earlier errors omit them.
+  """
   @type redirect_error :: %{
-          error: String.t(),
-          error_description: String.t(),
-          redirect_uri: String.t(),
-          state: String.t() | nil
+          required(:error) => String.t(),
+          required(:error_description) => String.t(),
+          required(:redirect_uri) => String.t(),
+          required(:state) => String.t() | nil,
+          optional(:response_mode) => String.t() | nil,
+          optional(:client_id) => String.t()
         }
 
   @typedoc "The classification of a validation failure (OIDC Core §3.1.2.6)."
@@ -360,7 +369,32 @@ defmodule Attesto.AuthorizationRequest do
          acr_values: parse_space_list(Map.get(params, "acr_values")),
          response_mode: response_mode
        }}
+    else
+      # JARM §2.3 / FAPI 2.0 Message Signing §5.4: a redirectable error must be
+      # returned in the requested response mode too. The client is trusted by
+      # now (client_id resolved, redirect_uri registered), so enrich the error
+      # with the requested response_mode and the audience (client_id) the
+      # transport needs to encode the error as a signed JWT. A request whose
+      # response_mode is itself unsupported never reaches here as a JWT mode, so
+      # such errors fall back to the default (query) at the transport.
+      {:error, {:redirect, error}} ->
+        {:error, {:redirect, Map.merge(error, redirect_error_context(params, client_id))}}
+
+      other ->
+        other
     end
+  end
+
+  # Only a supported JARM response_mode is carried onto an error; an absent or
+  # unsupported value leaves it nil so the transport uses its default encoding.
+  defp redirect_error_context(params, client_id) do
+    response_mode =
+      case Map.get(params, "response_mode") do
+        mode when mode in @supported_response_modes -> mode
+        _ -> nil
+      end
+
+    %{response_mode: response_mode, client_id: client_id}
   end
 
   # OAuth 2.0 Response Modes / JARM §2.3: response_mode is OPTIONAL; absent means
