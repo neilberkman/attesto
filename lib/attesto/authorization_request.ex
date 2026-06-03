@@ -215,7 +215,24 @@ defmodule Attesto.AuthorizationRequest do
     end
   end
 
-  defp merge_request_object(params, _opts), do: {:ok, params}
+  # No (or empty) `request` object present. RFC 9101 / FAPI 2.0 Message Signing
+  # §5.3.1: when the policy requires a signed request object, a request carrying
+  # none is rejected (redirectable invalid_request); otherwise the plain
+  # parameters stand (generic OpenID Connect §6.1).
+  defp merge_request_object(params, opts) do
+    policy = Keyword.get(opts, :request_object_policy, %Policy{})
+
+    if Policy.require_request_object?(policy) do
+      redirect_request_object_error(
+        params,
+        "invalid_request",
+        "a signed request object is required",
+        opts
+      )
+    else
+      {:ok, params}
+    end
+  end
 
   defp redirect_request_object_error(params, error, description, opts) do
     case validate_redirect_uri(params, Keyword.fetch!(opts, :registered_redirect_uris)) do

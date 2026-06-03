@@ -75,6 +75,23 @@ defmodule Attesto.DiscoveryTest do
       refute Map.has_key?(meta, "revocation_endpoint")
     end
 
+    test "advertises the RFC 9101 signed-request-object metadata when supplied" do
+      meta =
+        Discovery.metadata(config(),
+          require_signed_request_object: true,
+          request_object_signing_alg_values_supported: ["PS256", "ES256", "EdDSA"]
+        )
+
+      assert meta["require_signed_request_object"] == true
+      assert meta["request_object_signing_alg_values_supported"] == ["PS256", "ES256", "EdDSA"]
+    end
+
+    test "omits the signed-request-object metadata when not supplied" do
+      meta = Discovery.metadata(config())
+      refute Map.has_key?(meta, "require_signed_request_object")
+      refute Map.has_key?(meta, "request_object_signing_alg_values_supported")
+    end
+
     test "an explicit jwks_uri overrides the derived one" do
       meta = Discovery.metadata(config(), jwks_uri: "https://keys.example.com/jwks")
       assert meta["jwks_uri"] == "https://keys.example.com/jwks"

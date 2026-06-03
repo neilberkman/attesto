@@ -52,6 +52,8 @@ defmodule Attesto.Discovery do
     mtls_endpoint_aliases
     require_pushed_authorization_requests
     pushed_authorization_request_endpoint
+    require_signed_request_object
+    request_object_signing_alg_values_supported
     service_documentation
     ui_locales_supported
   )a

@@ -235,6 +235,20 @@ defmodule Attesto.AuthorizationRequestTest do
       assert err.state == "xyz"
     end
 
+    test "a request carrying no request object is rejected when the policy requires one" do
+      # FAPI 2.0 Message Signing §5.3.1: the policy mandates a signed request
+      # object, so plain parameters alone are rejected (redirectable).
+      assert {:error, {:redirect, err}} =
+               AuthorizationRequest.validate(base_params(),
+                 registered_redirect_uris: @registered,
+                 request_object_policy: Policy.fapi_message_signing()
+               )
+
+      assert err.error == "invalid_request"
+      assert err.redirect_uri == @redirect_uri
+      assert err.state == "xyz"
+    end
+
     test "unsigned request object is rejected as unsupported" do
       request =
         unsigned_request_object(%{
