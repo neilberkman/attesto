@@ -232,5 +232,88 @@ defmodule Attesto.IntrospectionTest do
 
       assert introspect_refresh(config, "refresh-malformed", now) == %{"active" => false}
     end
+
+    test "surfaces sub/scope/client_id from the stored data (RFC 7662 §2.2)", %{config: config} do
+      now = 1_700_000_000
+
+      StubRefreshStore.put("refresh-rich", %{
+        family_id: "fam-1",
+        expires_at: now + 1000,
+        consumed: false,
+        data: %{subject: "user-42", scope: ["openid", "documents.read"], client_id: "oc_abc123"}
+      })
+
+      response = introspect_refresh(config, "refresh-rich", now)
+
+      assert response["active"] == true
+      assert response["sub"] == "user-42"
+      assert response["scope"] == "openid documents.read"
+      assert response["client_id"] == "oc_abc123"
+      refute Map.has_key?(response, "cnf")
+    end
+
+    test "echoes the DPoP binding as cnf/token_type for a sender-constrained refresh token", %{
+      config: config
+    } do
+      now = 1_700_000_000
+      jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+
+      StubRefreshStore.put("refresh-dpop", %{
+        family_id: "fam-1",
+        expires_at: now + 1000,
+        consumed: false,
+        data: %{subject: "user-42", scope: [], client_id: "oc_abc123", dpop_jkt: jkt}
+      })
+
+      response = introspect_refresh(config, "refresh-dpop", now)
+
+      assert response["cnf"] == %{"jkt" => jkt}
+      assert response["token_type"] == "DPoP"
+    end
+
+    test "reads string-keyed data from a custom store too", %{config: config} do
+      now = 1_700_000_000
+
+      StubRefreshStore.put("refresh-stringkeys", %{
+        family_id: "fam-1",
+        expires_at: now + 1000,
+        consumed: false,
+        data: %{"subject" => "user-99", "client_id" => "oc_xyz"}
+      })
+
+      response = introspect_refresh(config, "refresh-stringkeys", now)
+
+      assert response["sub"] == "user-99"
+      assert response["client_id"] == "oc_xyz"
+    end
+
+    test "an :authorize policy can make a per-token decision for refresh tokens", %{config: config} do
+      now = 1_700_000_000
+
+      StubRefreshStore.put("refresh-authz", %{
+        family_id: "fam-1",
+        expires_at: now + 1000,
+        consumed: false,
+        data: %{subject: "user-42", scope: [], client_id: "oc_abc123"}
+      })
+
+      # The caller is only entitled to its own client's refresh tokens.
+      allow = fn response -> response["client_id"] == "oc_abc123" end
+      deny = fn response -> response["client_id"] == "someone-else" end
+
+      assert Introspection.introspect(config, "refresh-authz",
+               now: now,
+               refresh_store: StubRefreshStore,
+               token_type_hint: "refresh_token",
+               authorize: allow
+             )["active"] == true
+
+      assert Introspection.introspect(config, "refresh-authz",
+               now: now,
+               refresh_store: StubRefreshStore,
+               token_type_hint: "refresh_token",
+               authorize: deny
+             ) == %{"active" => false}
+    end
   end
 end

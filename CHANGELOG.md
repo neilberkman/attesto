@@ -56,9 +56,20 @@ unchanged unless a caller opts into the new policy/options.
   response to `%{"active" => false}` so a caller not authorized for the token
   learns nothing about it. When omitted, every authenticated caller may
   introspect any token (the single-trust-domain default).
+- `Attesto.Introspection` surfaces the RFC 7662 `sub`/`scope`/`client_id`/`cnf`
+  members for an active refresh token from the stored record's own data
+  contract (`Attesto.RefreshToken` build context), when present, so a resource
+  server — and an `:authorize` policy — can decide per refresh token rather than
+  allow/deny every refresh token wholesale. A store that does not populate them
+  yields the minimal `active`+`exp` response.
 
 ### Security
 
+- `Attesto.AuthorizationRequest.validate/2` now judges the OIDC `openid`-scope
+  gate for the `require_nonce` policy on the EFFECTIVE (post-merge) request, so
+  a direct JAR carrying `scope=openid` only inside the signed request object can
+  no longer bypass the host's nonce requirement. A plain OAuth request (no
+  `openid` scope) remains un-nonce-constrained.
 - `Attesto.RequestObject.verify/3` rejects a signed request object whose `aud`
   is an array containing any non-string member (RFC 7519 §4.1.3), rather than
   accepting it on a single matching member — matching the hardened

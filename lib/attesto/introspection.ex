@@ -22,11 +22,15 @@ defmodule Attesto.Introspection do
       validated, and the binding is echoed in the response so a resource server
       can check it (RFC 7662 / RFC 8705 §3.2 / RFC 9449).
 
-    * **Refresh tokens** are opaque, stored secrets whose context is host-owned
-      and opaque to the core, so a refresh token present in the store,
-      unconsumed, and unexpired is reported active with the minimal `active`
-      member (plus `exp`); a consumed (rotated) or expired one is inactive, and
-      its scope/subject are not decoded here.
+    * **Refresh tokens** are opaque, stored secrets: a refresh token present in
+      the store, unconsumed, and unexpired is reported active, a consumed
+      (rotated) or expired one inactive. The stored record's own data contract
+      (`Attesto.RefreshToken` build context) carries the subject, granted scope,
+      presenting client, and optional DPoP binding, so those RFC 7662 members
+      are surfaced when present (`sub`/`scope`/`client_id`/`cnf`) - for a
+      resource server, and so an `:authorize` policy can decide per token. A
+      store that does not populate them yields the minimal `active`+`exp`
+      response.
 
     * Anything else - a malformed token, a forged signature, an expired token,
       or one absent from the store - is reported inactive (`%{"active" => false}`),
@@ -141,7 +145,7 @@ defmodule Attesto.Introspection do
     with store when is_atom(store) and not is_nil(store) <- Keyword.get(opts, :refresh_store),
          {:ok, entry} <- store.get(Secret.hash(token)),
          true <- active_refresh?(entry, now(opts)) do
-      %{"active" => true, "exp" => entry.expires_at}
+      rfc7662_refresh_response(entry)
     else
       _ -> nil
     end
@@ -153,6 +157,53 @@ defmodule Attesto.Introspection do
   # a malformed record missing `:consumed` - introspects as inactive.
   defp active_refresh?(%{consumed: false, expires_at: exp}, now) when is_integer(exp), do: exp > now
   defp active_refresh?(_entry, _now), do: false
+
+  # Map the stored refresh-token record onto the RFC 7662 response members. The
+  # token is opaque, but the core's own data contract (`Attesto.RefreshToken`
+  # `build_data/3`, reproduced by the bundled stores' entry shape) carries the
+  # subject, granted scope, presenting client, and optional DPoP binding, so the
+  # safe RFC 7662 members are surfaced - both for a resource server and so an
+  # `:authorize` policy can make a per-token decision (RFC 7662 §4 / RFC 9701
+  # §5) rather than allow/deny every refresh token wholesale. Each member is
+  # copied only when present and well-typed, so a custom store that does not
+  # populate it (or omits `:data` entirely) simply yields the minimal response.
+  defp rfc7662_refresh_response(entry) do
+    data = entry_data(entry)
+
+    %{"active" => true, "exp" => entry.expires_at}
+    |> put_string("sub", data_member(data, :subject))
+    |> put_string("client_id", data_member(data, :client_id))
+    |> put_scope(data_member(data, :scope))
+    |> put_cnf(data_member(data, :dpop_jkt))
+  end
+
+  defp entry_data(%{data: data}) when is_map(data), do: data
+  defp entry_data(_entry), do: %{}
+
+  # The bundled stores key `:data` with atoms (`Attesto.RefreshToken.build_data/3`);
+  # a store that round-trips through a string-keyed encoding is read too.
+  defp data_member(data, key), do: Map.get(data, key) || Map.get(data, Atom.to_string(key))
+
+  defp put_string(response, _key, value) when not is_binary(value) or value == "", do: response
+  defp put_string(response, key, value), do: Map.put(response, key, value)
+
+  # RFC 7662 §2.2: `scope` is the space-delimited granted scope.
+  defp put_scope(response, scope) when is_list(scope) do
+    case Enum.filter(scope, &is_binary/1) do
+      [] -> response
+      strings -> Map.put(response, "scope", Enum.join(strings, " "))
+    end
+  end
+
+  defp put_scope(response, _scope), do: response
+
+  # RFC 7662 / RFC 9449: echo the DPoP binding so a resource server can verify a
+  # sender-constrained refresh token, and report `token_type` accordingly.
+  defp put_cnf(response, jkt) when is_binary(jkt) and jkt != "" do
+    response |> Map.put("cnf", %{"jkt" => jkt}) |> Map.put("token_type", @dpop)
+  end
+
+  defp put_cnf(response, _jkt), do: response
 
   # Map the verified access-token claims onto the RFC 7662 response members,
   # carrying through only the members that are present. token_type reflects the

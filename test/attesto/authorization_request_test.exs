@@ -543,6 +543,46 @@ defmodule Attesto.AuthorizationRequestTest do
       assert {:ok, req} = validate(params)
       assert is_nil(req.nonce)
     end
+
+    test "a non-OIDC request (no openid scope) is never nonce-constrained" do
+      # OIDC Core §3.1.2.1: nonce only applies to OpenID Connect Authentication
+      # Requests. A plain OAuth request without openid scope is accepted even
+      # under require_nonce: true.
+      params = base_params(%{"scope" => "profile"}) |> Map.delete("nonce")
+      assert {:ok, req} = validate_require_nonce(params)
+      assert is_nil(req.nonce)
+    end
+
+    test "a signed request object carrying openid scope cannot bypass require_nonce" do
+      # The OUTER params carry no openid scope (no scope at all): the openid gate
+      # MUST be judged on the merged request, or a direct JAR would slip past the
+      # host's nonce policy.
+      {request, client_jwk} = signed_request_object(fapi_request_claims() |> Map.delete("nonce"))
+
+      assert {:error, {:redirect, err}} =
+               validate_request_object(request, client_jwk, require_nonce: true)
+
+      assert err.error == "invalid_request"
+      assert err.error_description =~ "nonce"
+    end
+
+    test "a signed request object with openid scope and a nonce satisfies require_nonce" do
+      {request, client_jwk} =
+        signed_request_object(fapi_request_claims(%{"nonce" => "n-0S6_WzA2Mj"}))
+
+      assert {:ok, req} = validate_request_object(request, client_jwk, require_nonce: true)
+      assert req.nonce == "n-0S6_WzA2Mj"
+      assert req.openid? == true
+    end
+
+    test "a signed request object without openid scope is not nonce-constrained" do
+      claims = fapi_request_claims(%{"scope" => "profile"}) |> Map.delete("nonce")
+      {request, client_jwk} = signed_request_object(claims)
+
+      assert {:ok, req} = validate_request_object(request, client_jwk, require_nonce: true)
+      assert is_nil(req.nonce)
+      assert req.openid? == false
+    end
   end
 
   describe "validate/2 request_object_policy (FAPI Message Signing 2.0 §5.3.1)" do

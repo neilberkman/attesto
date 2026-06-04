@@ -168,11 +168,15 @@ defmodule Attesto.AuthorizationRequest do
       §3.1.2.1). An empty list rejects every request with
       `{:direct, :redirect_uri_not_registered}`.
 
-    * `:require_nonce` (optional, default `false`) - when `true`, a request with
-      no `nonce` is rejected with a redirectable `invalid_request` error (OIDC
-      Core §3.1.2.1). When `false`, `nonce` stays OPTIONAL and is carried through
-      unenforced (RFC 6749 keeps `code` at SHOULD). The host sets this per its
-      own OP policy.
+    * `:require_nonce` (optional, default `false`) - the host's OP nonce policy.
+      When `true`, an OpenID Connect Authentication Request (one whose EFFECTIVE
+      scope - after any signed `request` object is merged - carries `openid`)
+      with no `nonce` is rejected with a redirectable `invalid_request` error
+      (OIDC Core §3.1.2.1). The openid test runs on the merged request, so a
+      `scope=openid` carried only inside a signed request object still triggers
+      the requirement. A plain OAuth request (no `openid` scope) is never
+      nonce-constrained (RFC 6749 keeps `code` at SHOULD). When `false`, `nonce`
+      stays OPTIONAL and is carried through unenforced.
 
     * `:require_pkce` (optional, default `true`) - when `true`, a request with no
       `code_challenge` is rejected with a redirectable `invalid_request` error
@@ -201,17 +205,29 @@ defmodule Attesto.AuthorizationRequest do
   @spec validate(map(), keyword()) :: {:ok, t()} | {:error, error()}
   def validate(params, opts) when is_map(params) and is_list(opts) do
     registered = Keyword.fetch!(opts, :registered_redirect_uris)
-    require_nonce = Keyword.get(opts, :require_nonce, @default_require_nonce)
+    require_nonce_policy = Keyword.get(opts, :require_nonce, @default_require_nonce)
     require_pkce = Keyword.get(opts, :require_pkce, @default_require_pkce)
 
     with {:ok, params} <- merge_request_object(params, opts),
          {:ok, client_id} <- validate_client_id(params),
          {:ok, redirect_uri} <- validate_redirect_uri(params, registered) do
+      # OIDC Core §3.1.2.1: the nonce requirement applies only to an OpenID
+      # Connect Authentication Request, judged on the EFFECTIVE (post-merge)
+      # scope. A direct JAR can carry `scope=openid` only inside the signed
+      # request object, so the openid gate MUST run here, after
+      # merge_request_object/2 - never on the raw outer params, or a signed
+      # request object would bypass the host's `require_nonce` policy.
+      require_nonce = require_nonce_policy and oidc_request?(params)
+
       # From here on, redirect_uri is trusted: report further errors by
       # redirecting to it (RFC 6749 §4.1.2.1).
       validate_redirectable(params, client_id, redirect_uri, require_nonce, require_pkce)
     end
   end
+
+  # OIDC Core §3.1.2.1: an OpenID Connect Authentication Request is one whose
+  # (effective) `scope` carries the reserved `openid` value.
+  defp oidc_request?(params), do: @openid_scope in parse_space_list(Map.get(params, "scope"))
 
   @doc """
   The response modes this authorization-code server accepts (OAuth 2.0 Response
