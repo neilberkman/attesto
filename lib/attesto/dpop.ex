@@ -271,16 +271,18 @@ defmodule Attesto.DPoP do
     end
   end
 
+  # Strict, canonical, unpadded base64url (RFC 7515 §2): decode and require the
+  # input to be the canonical encoding of the bytes (no padding, no
+  # non-significant trailing bits). This matches the canonical-form check the
+  # Token/IDToken/ClientAssertion/RequestObject verifiers apply, so the DPoP
+  # header cannot be presented in a non-canonical/aliased form.
   defp url_decode(s) do
-    padded =
-      case rem(byte_size(s), 4) do
-        0 -> s
-        n -> s <> String.duplicate("=", 4 - n)
-      end
+    case Base.url_decode64(s, padding: false) do
+      {:ok, decoded} ->
+        if Base.url_encode64(decoded, padding: false) == s, do: {:ok, decoded}, else: :error
 
-    case Base.url_decode64(padded) do
-      {:ok, decoded} -> {:ok, decoded}
-      :error -> :error
+      :error ->
+        :error
     end
   end
 

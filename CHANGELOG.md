@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- `Attesto.DPoP` now applies the strict canonical-base64url check to the proof's
+  JOSE header (no padding, no non-significant trailing bits) that the
+  Token/IDToken/ClientAssertion/RequestObject verifiers already apply, so a DPoP
+  proof header cannot be presented in a non-canonical/aliased encoding.
+  Defense-in-depth (the signature is verified over the real bytes regardless).
+
 ## [0.6.13] - 2026-06-04
 
 The FAPI 2.0 Message Signing surface: signed request objects (JAR, §5.3),
