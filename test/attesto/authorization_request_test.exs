@@ -557,7 +557,7 @@ defmodule Attesto.AuthorizationRequestTest do
       # The OUTER params carry no openid scope (no scope at all): the openid gate
       # MUST be judged on the merged request, or a direct JAR would slip past the
       # host's nonce policy.
-      {request, client_jwk} = signed_request_object(fapi_request_claims() |> Map.delete("nonce"))
+      {request, client_jwk} = signed_request_object(Map.delete(fapi_request_claims(), "nonce"))
 
       assert {:error, {:redirect, err}} =
                validate_request_object(request, client_jwk, require_nonce: true)
@@ -576,7 +576,7 @@ defmodule Attesto.AuthorizationRequestTest do
     end
 
     test "a signed request object without openid scope is not nonce-constrained" do
-      claims = fapi_request_claims(%{"scope" => "profile"}) |> Map.delete("nonce")
+      claims = Map.delete(fapi_request_claims(%{"scope" => "profile"}), "nonce")
       {request, client_jwk} = signed_request_object(claims)
 
       assert {:ok, req} = validate_request_object(request, client_jwk, require_nonce: true)
