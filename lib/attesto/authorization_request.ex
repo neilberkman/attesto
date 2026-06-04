@@ -375,9 +375,6 @@ defmodule Attesto.AuthorizationRequest do
       # such errors fall back to the default (query) at the transport.
       {:error, {:redirect, error}} ->
         {:error, {:redirect, Map.merge(error, redirect_error_context(params, client_id))}}
-
-      other ->
-        other
     end
   end
 
