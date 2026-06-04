@@ -6,6 +6,68 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-06-04
+
+The FAPI 2.0 Message Signing surface: signed request objects (JAR, §5.3),
+signed authorization responses (JARM, §5.4), and token introspection with
+signed responses (§5.5). All additions are backward-compatible; behaviour is
+unchanged unless a caller opts into the new policy/options.
+
+### Added
+
+- `Attesto.JARM` — JWT Secured Authorization Response Mode (§5.4). Signs an
+  authorization response (success: `code`/`state`; error:
+  `error`/`error_description`/`state`) into a JWT carrying `iss`/`aud`/`exp`/
+  `iat`, using the keystore signing key (algorithm pinned, never `none`).
+- `Attesto.Introspection` — OAuth 2.0 Token Introspection (RFC 7662). Access
+  tokens are introspected statelessly with the full `Attesto.Token` verifier
+  except the sender-binding proof match (the `cnf` is echoed for the resource
+  server); refresh tokens are checked against an `Attesto.RefreshStore`
+  (active only while unconsumed and unexpired). Never an error — an invalid,
+  expired, revoked, or unknown token is reported inactive (no existence
+  oracle).
+- `Attesto.SignedIntrospection` — the RFC 9701 signed introspection response
+  (a JWT with `iss`/`aud`/`iat` and a `token_introspection` claim, JOSE header
+  `typ` = `"token-introspection+jwt"`).
+- `Attesto.RequestObject.Policy` gains `require_request_object` (false in
+  `generic/0`, true in `fapi_message_signing/0`) and
+  `require_request_object?/1`. `Attesto.AuthorizationRequest.validate/2` rejects
+  a request that carries no signed request object when the policy requires one
+  (redirectable `invalid_request`; non-redirectable when the client is
+  untrusted, OIDC Core §3.1.2.6).
+- `Attesto.AuthorizationRequest` parses and validates `response_mode` (the
+  RFC 6749 `query` plus the JARM modes `jwt`/`query.jwt`/`fragment.jwt`/
+  `form_post.jwt`); `supported_response_modes/0` exposes the accepted set.
+  Trusted redirectable errors carry the requested `response_mode` and the
+  `client_id` so the transport can return the error as a JARM JWT.
+- `Attesto.Discovery` allowlists the RFC 9101 §10.5 metadata members
+  `require_signed_request_object` and
+  `request_object_signing_alg_values_supported`.
+- `Attesto.SigningAlg.keystore_algs/1` — the unique signing algorithms across a
+  keystore's verification keys (shared by the ID Token / JARM / introspection
+  signing-algorithm metadata).
+- `Attesto.Token.verify/3` accepts `require_confirmation_binding: false` to
+  verify a token's signature/claims while skipping only the sender-binding
+  proof match (used by introspection); the `cnf` shape is still validated.
+- `Attesto.Introspection.introspect/3` accepts an `:authorize` predicate
+  `(response -> boolean)` consulted with the active response before it is
+  returned (RFC 7662 §4 / RFC 9701 §5: the AS MAY restrict which tokens a
+  caller may introspect). A non-`true` return — or a raise — downgrades the
+  response to `%{"active" => false}` so a caller not authorized for the token
+  learns nothing about it. When omitted, every authenticated caller may
+  introspect any token (the single-trust-domain default).
+
+### Security
+
+- `Attesto.RequestObject.verify/3` rejects a signed request object whose `aud`
+  is an array containing any non-string member (RFC 7519 §4.1.3), rather than
+  accepting it on a single matching member — matching the hardened
+  Token/IDToken/JARM audience handling.
+- `Attesto.RequestObject.verify/3` rejects a request object that itself carries
+  a `request` or `request_uri` claim (RFC 9101 §4 forbids them) instead of
+  silently dropping them, so a nested-request smuggle fails closed at the
+  verifier.
+
 ## [0.6.12] - 2026-06-03
 
 ### Added

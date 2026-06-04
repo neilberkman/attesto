@@ -340,6 +340,50 @@ defmodule Attesto.RequestObjectTest do
     end
   end
 
+  describe "audience claim hardening (RFC 7519 §4.1.3)" do
+    test "accepts an all-string aud array containing the expected audience" do
+      key = ec_key()
+      jwt = request_object(key, %{"aud" => [@audience, "https://other.example"]})
+
+      assert {:ok, _params} =
+               RequestObject.verify(jwt, %{"keys" => [public_jwk(key)]}, base_opts())
+    end
+
+    test "rejects an aud array with a non-string member even if a string matches" do
+      key = ec_key()
+      jwt = request_object(key, %{"aud" => [@audience, 42]})
+
+      assert {:error, :invalid_audience} =
+               RequestObject.verify(jwt, %{"keys" => [public_jwk(key)]}, base_opts())
+    end
+
+    test "rejects an empty aud array" do
+      key = ec_key()
+      jwt = request_object(key, %{"aud" => []})
+
+      assert {:error, :invalid_audience} =
+               RequestObject.verify(jwt, %{"keys" => [public_jwk(key)]}, base_opts())
+    end
+  end
+
+  describe "forbidden nested request parameters (RFC 9101 §4)" do
+    test "rejects a request object that carries a nested request claim" do
+      key = ec_key()
+      jwt = request_object(key, %{"request" => "nested.jwt.here"})
+
+      assert {:error, :invalid_request_object} =
+               RequestObject.verify(jwt, %{"keys" => [public_jwk(key)]}, base_opts())
+    end
+
+    test "rejects a request object that carries a nested request_uri claim" do
+      key = ec_key()
+      jwt = request_object(key, %{"request_uri" => "https://attacker.example/ro"})
+
+      assert {:error, :invalid_request_object} =
+               RequestObject.verify(jwt, %{"keys" => [public_jwk(key)]}, base_opts())
+    end
+  end
+
   # Helpers that build a signed object lacking a given claim entirely.
   defp sign_without(jwk, claim) do
     now = System.system_time(:second)

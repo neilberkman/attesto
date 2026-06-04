@@ -71,6 +71,7 @@ defmodule Attesto.RequestObject do
          :ok <- check_supported_alg(header),
          :ok <- check_typ(header, Keyword.get(opts, :accepted_typ)),
          {:ok, claims} <- verify_signature(jwt, header, trusted_jwks, opts),
+         :ok <- check_no_nested_request(claims),
          :ok <- check_claim_issuer(claims),
          :ok <- check_issuer(claims, Keyword.get(opts, :issuer)),
          :ok <- check_audience(claims, Keyword.get(opts, :audience)),
@@ -125,6 +126,19 @@ defmodule Attesto.RequestObject do
     end)
   end
 
+  # RFC 9101 §4: "The Request Object MAY contain... [it] MUST NOT contain the
+  # request or request_uri parameters." A nested `request`/`request_uri` is a
+  # malformed request object, not a parameter to silently strip - reject it so a
+  # recursion/smuggle attempt fails closed at the verifier rather than being
+  # quietly dropped and later rejected with the wrong error downstream.
+  defp check_no_nested_request(claims) do
+    if Map.has_key?(claims, "request") or Map.has_key?(claims, "request_uri") do
+      {:error, :invalid_request_object}
+    else
+      :ok
+    end
+  end
+
   defp check_claim_issuer(%{"client_id" => client_id, "iss" => client_id})
        when is_binary(client_id) and client_id != "", do: :ok
 
@@ -137,13 +151,23 @@ defmodule Attesto.RequestObject do
   defp check_audience(_claims, nil), do: {:error, :invalid_audience}
 
   defp check_audience(%{"aud" => aud}, expected) when is_list(expected) do
-    if aud_intersects?(aud, expected), do: :ok, else: {:error, :invalid_audience}
+    if valid_aud_claim?(aud) and aud_intersects?(aud, expected),
+      do: :ok,
+      else: {:error, :invalid_audience}
   end
 
   defp check_audience(%{"aud" => aud}, expected) when is_binary(expected),
     do: check_audience(%{"aud" => aud}, [expected])
 
   defp check_audience(_claims, _expected), do: {:error, :invalid_audience}
+
+  # RFC 7519 §4.1.3: `aud` is a StringOrURI or an array of StringOrURI. A list
+  # carrying any non-string member is a malformed audience claim - reject it
+  # rather than accepting on a single matching member (matches the hardened
+  # Token/IDToken/JARM audience handling).
+  defp valid_aud_claim?(aud) when is_binary(aud), do: true
+  defp valid_aud_claim?([_ | _] = aud), do: Enum.all?(aud, &is_binary/1)
+  defp valid_aud_claim?(_aud), do: false
 
   defp aud_intersects?(aud, expected) when is_binary(aud), do: aud in expected
   defp aud_intersects?(aud, expected) when is_list(aud), do: Enum.any?(aud, &(&1 in expected))

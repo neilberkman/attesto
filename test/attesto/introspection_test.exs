@@ -88,6 +88,65 @@ defmodule Attesto.IntrospectionTest do
     end
   end
 
+  describe "introspect/3 - :authorize caller policy (RFC 7662 §4 / RFC 9701 §5)" do
+    test "an authorize predicate that accepts leaves the active response intact", %{config: config} do
+      now = 1_700_000_000
+      {:ok, %{access_token: jwt}} = Token.mint(config, client_principal(), now: now)
+
+      response = Introspection.introspect(config, jwt, now: now, authorize: fn _resp -> true end)
+
+      assert response["active"] == true
+      assert response["sub"] == "oc_abc123"
+    end
+
+    test "an authorize predicate that rejects downgrades to inactive (no leak)", %{config: config} do
+      now = 1_700_000_000
+      {:ok, %{access_token: jwt}} = Token.mint(config, client_principal(), now: now)
+
+      assert Introspection.introspect(config, jwt, now: now, authorize: fn _resp -> false end) ==
+               %{"active" => false}
+    end
+
+    test "the predicate sees the response (e.g. to match aud against the caller)", %{config: config} do
+      now = 1_700_000_000
+      {:ok, %{access_token: jwt}} = Token.mint(config, client_principal(), now: now)
+
+      authorize = fn resp -> resp["aud"] == config.audience end
+      assert Introspection.introspect(config, jwt, now: now, authorize: authorize)["active"] == true
+
+      authorize_other = fn resp -> resp["aud"] == "https://not-the-caller.example" end
+
+      assert Introspection.introspect(config, jwt, now: now, authorize: authorize_other) ==
+               %{"active" => false}
+    end
+
+    test "a raising predicate fails closed to inactive", %{config: config} do
+      now = 1_700_000_000
+      {:ok, %{access_token: jwt}} = Token.mint(config, client_principal(), now: now)
+
+      assert Introspection.introspect(config, jwt, now: now, authorize: fn _ -> raise "boom" end) ==
+               %{"active" => false}
+    end
+
+    test "a non-boolean return value fails closed to inactive", %{config: config} do
+      now = 1_700_000_000
+      {:ok, %{access_token: jwt}} = Token.mint(config, client_principal(), now: now)
+
+      assert Introspection.introspect(config, jwt, now: now, authorize: fn _ -> :yes end) ==
+               %{"active" => false}
+    end
+
+    test "the predicate is not consulted for an already-inactive token", %{config: config} do
+      # A forged token is inactive regardless; the predicate must not run (there
+      # is nothing to authorize), so a raising predicate still yields inactive
+      # rather than masking a would-be leak.
+      assert Introspection.introspect(config, "not-a-jwt",
+               now: 1_700_000_000,
+               authorize: fn _ -> raise "should not be called" end
+             ) == %{"active" => false}
+    end
+  end
+
   describe "introspect/3 - refresh tokens" do
     defmodule StubRefreshStore do
       @moduledoc false

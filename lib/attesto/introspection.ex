@@ -49,6 +49,7 @@ defmodule Attesto.Introspection do
   @type opts :: [
           refresh_store: module() | nil,
           token_type_hint: String.t() | nil,
+          authorize: (response() -> boolean()) | nil,
           now: integer() | DateTime.t()
         ]
 
@@ -62,6 +63,15 @@ defmodule Attesto.Introspection do
       refresh tokens; when absent, only access tokens are introspected.
     * `:token_type_hint` - `"access_token"` or `"refresh_token"` (RFC 7662
       §2.1); reorders the attempts, never restricts them.
+    * `:authorize` - a 1-arity predicate `(response -> boolean)` consulted with
+      the active response *before* it is returned (RFC 7662 §4 / RFC 9701 §5:
+      the AS MAY restrict which tokens a caller may introspect). The transport
+      layer captures the authenticated caller identity in this closure; if it
+      does not return `true` - or it raises - the response is downgraded to
+      `%{"active" => false}` so a caller not authorized for the token learns
+      nothing about it (FAPI: a regular client querying introspection is a
+      leakage risk). When absent, every authenticated caller may introspect any
+      token (the single-trust-domain default).
     * `:now` - the reference time (Unix seconds or `DateTime`), for tests.
   """
   @spec introspect(Config.t(), String.t(), opts()) :: response()
@@ -69,6 +79,28 @@ defmodule Attesto.Introspection do
     opts
     |> ordered_attempts()
     |> Enum.find_value(@inactive, fn attempt -> attempt.(config, token, opts) end)
+    |> authorize_caller(opts)
+  end
+
+  # RFC 7662 §4 / RFC 9701 §5: an active response is returned to the caller only
+  # if the host's caller-authorization predicate accepts it. Fail closed - a
+  # predicate that returns anything but `true`, or raises, makes the token
+  # inactive to this caller. An inactive result (no token, or not active) is
+  # never passed to the predicate: there is nothing to leak and nothing to
+  # authorize.
+  defp authorize_caller(%{"active" => true} = response, opts) do
+    case Keyword.get(opts, :authorize) do
+      fun when is_function(fun, 1) -> if safe_authorize(fun, response), do: response, else: @inactive
+      _ -> response
+    end
+  end
+
+  defp authorize_caller(response, _opts), do: response
+
+  defp safe_authorize(fun, response) do
+    fun.(response) == true
+  rescue
+    _ -> false
   end
 
   # RFC 7662 §2.1: the hint is an optimisation, not a constraint - try the hinted
