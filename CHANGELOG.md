@@ -6,6 +6,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.15] - 2026-06-12
+
+### Fixed
+
+- `Attesto.RequestObject` compares the JOSE `typ` header CASE-INSENSITIVELY
+  (RFC 7515 §4.1.9 `typ` is a media type; RFC 2045 §5.1 media types are
+  case-insensitive). The FAPI 2.0 Message Signing conformance suite signs request
+  objects with a randomly-cased typ (e.g. `OautH-auThZ-REQ+jWt`) to exercise
+  this; the previous exact-match rejected them as `invalid_typ`, failing the
+  Message-Signing happy-flow / user-rejects tests at the PAR endpoint. A wrong
+  type is still rejected; an absent `typ` is still governed by `accepted_typ`.
+
 ## [0.6.14] - 2026-06-12
 
 ### Fixed

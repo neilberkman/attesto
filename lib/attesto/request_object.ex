@@ -287,11 +287,28 @@ defmodule Attesto.RequestObject do
   # RFC 9101 / FAPI Message Signing 2.0 §5.3.1: a strict-JAR profile may pin
   # the JOSE header `typ` (e.g. "oauth-authz-req+jwt"). Default `nil` accepts
   # any `typ`, including its absence, preserving lenient JAR/OIDC §6.1.
+  #
+  # `typ` is a media type (RFC 7515 §4.1.9), and media types are case-INSENSITIVE
+  # (RFC 2045 §5.1), so the comparison is case-insensitive: the FAPI conformance
+  # suite signs request objects with a randomly-cased typ (e.g.
+  # "OautH-auThZ-REQ+jWt") to exercise exactly this. A `nil` member of `accepted`
+  # permits an absent `typ`.
   defp check_typ(_header, nil), do: :ok
 
   defp check_typ(header, accepted) when is_list(accepted) do
-    if Map.get(header, "typ") in accepted, do: :ok, else: {:error, :invalid_typ}
+    if typ_accepted?(Map.get(header, "typ"), accepted),
+      do: :ok,
+      else: {:error, :invalid_typ}
   end
+
+  defp typ_accepted?(nil, accepted), do: Enum.member?(accepted, nil)
+
+  defp typ_accepted?(typ, accepted) when is_binary(typ) do
+    down = String.downcase(typ)
+    Enum.any?(accepted, fn a -> is_binary(a) and String.downcase(a) == down end)
+  end
+
+  defp typ_accepted?(_typ, _accepted), do: false
 
   defp check_compact_form(jwt) do
     case String.split(jwt, ".") do

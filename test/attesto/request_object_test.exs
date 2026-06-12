@@ -320,6 +320,21 @@ defmodule Attesto.RequestObjectTest do
                )
     end
 
+    test "accepted_typ matches case-insensitively (media types per RFC 2045)" do
+      key = ec_key()
+      # The FAPI Message Signing conformance suite signs the request object with
+      # a randomly-cased typ (e.g. "OautH-auThZ-REQ+jWt") to verify the OP treats
+      # the media type case-insensitively.
+      jwt = request_object(key, %{}, %{"typ" => "OautH-auThZ-REQ+jWt"})
+
+      assert {:ok, _} =
+               RequestObject.verify(
+                 jwt,
+                 %{"keys" => [public_jwk(key)]},
+                 base_opts() ++ [accepted_typ: ["oauth-authz-req+jwt"]]
+               )
+    end
+
     test "accepted_typ rejects an absent typ unless nil is a member" do
       key = ec_key()
       jwt = request_object_without_typ(key)
