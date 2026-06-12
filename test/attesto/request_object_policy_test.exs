@@ -25,7 +25,10 @@ defmodule Attesto.RequestObject.PolicyTest do
       assert Keyword.get(opts, :max_nbf_age_seconds) == 3600
       assert Keyword.get(opts, :require_exp) == true
       assert Keyword.get(opts, :max_lifetime_seconds) == 3600
-      assert Keyword.get(opts, :accepted_typ) == ["oauth-authz-req+jwt"]
+      # `typ` is validated when present but not required: the FAPI Message
+      # Signing conformance suite signs request objects without a `typ` header,
+      # and §5.3.1 only requires the OP to ACCEPT the type, not mandate it.
+      assert Keyword.get(opts, :accepted_typ) == ["oauth-authz-req+jwt", nil]
       # accepted_algs is left nil so verify/3's fapi_algs() default applies.
       refute Keyword.has_key?(opts, :accepted_algs)
     end

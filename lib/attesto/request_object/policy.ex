@@ -52,16 +52,20 @@ defmodule Attesto.RequestObject.Policy do
       that clients send the request as a signed JWT);
     * `nbf` REQUIRED, no more than 60 minutes in the past;
     * `exp` REQUIRED, no more than 60 minutes after `nbf`;
-    * JOSE header `typ` must be `"oauth-authz-req+jwt"`.
+    * JOSE header `typ`, when present, must be `"oauth-authz-req+jwt"`, but is
+      NOT required.
 
   `accepted_algs` is left `nil` to inherit `Attesto.RequestObject.verify/3`'s
   default (`Attesto.SigningAlg.fapi_algs/0`: PS256, ES256, EdDSA).
 
-  Note: pinning `typ` to exactly `"oauth-authz-req+jwt"` (rejecting an absent or
-  other `typ`) is stricter than §5.3.1's literal "shall accept that typ"; it is
-  the RFC 9101 §10.8 explicit-typing defence against cross-JWT confusion, and is
-  what the FAPI conformance suite exercises. A deployment wanting the softer
-  reading can build a `%Policy{}` with `accepted_typ: ["oauth-authz-req+jwt", nil]`.
+  Note on `typ`: §5.3.1's "shall accept that typ" requires an OP to *accept* the
+  `oauth-authz-req+jwt` type when a client sends it - it does not license
+  *requiring* it, and RFC 9101 §4 makes `typ` only RECOMMENDED. The FAPI 2.0
+  Message Signing conformance suite signs its request objects with no `typ`
+  header at all, so an OP that mandates `typ` rejects every conformant request
+  and fails certification. `accepted_typ: ["oauth-authz-req+jwt", nil]` therefore
+  keeps the RFC 9101 §10.8 explicit-typing defence *when a `typ` is present*
+  (a wrong type is still rejected) while accepting its absence.
   """
   @spec fapi_message_signing() :: t()
   def fapi_message_signing do
@@ -70,7 +74,7 @@ defmodule Attesto.RequestObject.Policy do
       max_nbf_age_seconds: 3600,
       require_exp: true,
       max_lifetime_seconds: 3600,
-      accepted_typ: ["oauth-authz-req+jwt"],
+      accepted_typ: ["oauth-authz-req+jwt", nil],
       require_request_object: true
     }
   end

@@ -6,6 +6,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.14] - 2026-06-12
+
+### Fixed
+
+- `Attesto.RequestObject.Policy.fapi_message_signing/0` no longer *requires* the
+  JOSE `typ` header on signed request objects - it now accepts an absent `typ`
+  (`accepted_typ: ["oauth-authz-req+jwt", nil]`) while still rejecting a wrong
+  one. FAPI 2.0 Message Signing §5.3.1 ("shall accept that typ") and RFC 9101 §4
+  make `typ` RECOMMENDED, not mandatory, and the OpenID FAPI conformance suite
+  signs its request objects with no `typ` header - so the previous strict
+  pinning rejected every conformant pushed request object and failed the FAPI2
+  Message Signing certification at the PAR endpoint. `typ` is still validated for
+  the RFC 9101 §10.8 explicit-typing defence when a client does send it.
+
 ### Security
 
 - `Attesto.DPoP` now applies the strict canonical-base64url check to the proof's
