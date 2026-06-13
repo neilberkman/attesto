@@ -676,7 +676,7 @@ defmodule Attesto.ParserHardeningTest do
     segments = String.split(jwt, ".")
     seg = Enum.at(segments, index)
     mid = div(byte_size(seg), 2)
-    <<head::binary-size(mid), tail::binary>> = seg
+    <<head::binary-size(^mid), tail::binary>> = seg
     spliced = head <> insert <> tail
 
     segments |> List.replace_at(index, spliced) |> Enum.join(".")
