@@ -26,7 +26,7 @@ defmodule Attesto.SignedIntrospection do
   the explicit type that distinguishes a signed introspection response from any
   other JWT. Signing mirrors `Attesto.IDToken` / `Attesto.JARM`: the keystore's
   current signing key and algorithm, with the `kid` in the header, signed
-  through `Attesto.JWS` so the algorithm is pinned (never `none`).
+  with that pinned algorithm (never `none`).
   """
 
   alias Attesto.{Config, JWS, Key, SigningAlg}

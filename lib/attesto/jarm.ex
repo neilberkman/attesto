@@ -26,7 +26,7 @@ defmodule Attesto.JARM do
 
   Signing mirrors `Attesto.IDToken`: the keystore's current signing key and its
   algorithm (`Attesto.SigningAlg.for_key/3`), with the `kid` in the JOSE header,
-  signed through `Attesto.JWS` so the algorithm is pinned (never `none`).
+  signed with that pinned algorithm (never `none`).
   """
 
   alias Attesto.{Config, JWS, Key, SigningAlg}

@@ -169,9 +169,10 @@ defmodule Attesto.RequestObject do
   defp valid_aud_claim?([_ | _] = aud), do: Enum.all?(aud, &is_binary/1)
   defp valid_aud_claim?(_aud), do: false
 
+  # Only ever called after `valid_aud_claim?/1` confirms `aud` is a binary or a
+  # non-empty list of binaries, so those two clauses are exhaustive here.
   defp aud_intersects?(aud, expected) when is_binary(aud), do: aud in expected
   defp aud_intersects?(aud, expected) when is_list(aud), do: Enum.any?(aud, &(&1 in expected))
-  defp aud_intersects?(_aud, _expected), do: false
 
   defp check_expiry(%{"exp" => exp}, opts) when is_integer(exp) and exp >= 0 do
     if exp > unix_now(opts), do: :ok, else: {:error, :expired}
