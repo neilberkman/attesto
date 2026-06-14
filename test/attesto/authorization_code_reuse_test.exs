@@ -121,8 +121,13 @@ defmodule Attesto.AuthorizationCodeReuseTest do
     } do
       {:ok, code} = AuthorizationCode.issue(TrackingStore, code_attrs(challenge, %{family_id: @family_id}))
 
-      assert {:ok, %Grant{family_id: @family_id}} =
+      assert {:ok, %Grant{family_id: @family_id} = grant} =
                AuthorizationCode.redeem(TrackingStore, code, redeem_params())
+
+      # The reuse marker is recorded by finalize/3 (the caller runs it only after
+      # the full token response is built), not by redeem/4. Only then is a replay
+      # a reuse attack.
+      assert :ok = AuthorizationCode.finalize(TrackingStore, code, grant)
 
       assert {:error, {:reuse, %{family_id: @family_id, subject: @subject}}} =
                AuthorizationCode.redeem(TrackingStore, code, redeem_params())
@@ -130,10 +135,27 @@ defmodule Attesto.AuthorizationCodeReuseTest do
 
     test "reuse meta carries a nil family_id when the code had none", %{challenge: challenge} do
       {:ok, code} = AuthorizationCode.issue(TrackingStore, code_attrs(challenge))
-      assert {:ok, %Grant{}} = AuthorizationCode.redeem(TrackingStore, code, redeem_params())
+      assert {:ok, %Grant{} = grant} = AuthorizationCode.redeem(TrackingStore, code, redeem_params())
+      assert :ok = AuthorizationCode.finalize(TrackingStore, code, grant)
 
       assert {:error, {:reuse, %{family_id: nil, subject: @subject}}} =
                AuthorizationCode.redeem(TrackingStore, code, redeem_params())
+    end
+
+    test "a redeem that validated but was never finalized is invalid_grant, not reuse", %{
+      challenge: challenge
+    } do
+      {:ok, code} = AuthorizationCode.issue(TrackingStore, code_attrs(challenge, %{family_id: @family_id}))
+
+      # Redemption fully validates - but the caller's downstream issuance then
+      # fails, so finalize/3 is NEVER called (the atomicity contract). The code
+      # is single-use-spent, but a re-presentation (e.g. the client retrying a
+      # transient failure) must be a clean invalid_grant, NOT a reuse attack that
+      # would wrongly revoke the family.
+      assert {:ok, %Grant{family_id: @family_id}} =
+               AuthorizationCode.redeem(TrackingStore, code, redeem_params())
+
+      assert {:error, :invalid_grant} = AuthorizationCode.redeem(TrackingStore, code, redeem_params())
     end
 
     test "a never-issued code is still invalid_grant, not reuse", %{challenge: _challenge} do

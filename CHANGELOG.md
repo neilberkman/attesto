@@ -6,6 +6,27 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.16] - 2026-06-13
+
+### Fixed
+
+- **Authorization-code redemption is now atomic.**
+  `Attesto.AuthorizationCode.redeem/4` no longer records the reuse marker
+  (`consumed_success`) itself; that moved to the new `finalize/3`, which the
+  caller runs ONLY after the full token response is successfully built. So a
+  code whose redemption validated but whose downstream issuance then failed (a
+  mint or refresh-store fault, a host `build_principal` callback returning the
+  subject under the wrong key) is left single-use-spent but NOT reuse-flagged: a
+  replay is a clean `invalid_grant` instead of a false reuse attack that revokes
+  the family, and a legitimate retry of a transient failure is not mistaken for
+  an attack. Previously any post-validation failure permanently bricked the code
+  AND marked it a successful redemption.
+
+  **Caller change:** after a successful token response, call
+  `AuthorizationCode.finalize/3` to record the reuse marker. The bundled
+  `attesto_phoenix` token endpoint (>= 0.7.7) does this. Stores that do not
+  implement the optional `mark_consumed/2` are unaffected.
+
 ## [0.6.15] - 2026-06-12
 
 ### Fixed

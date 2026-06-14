@@ -44,13 +44,19 @@ defmodule Attesto.AuthorizationCode do
   `redeem/4` enables that when - and only when - the `Attesto.CodeStore`
   implements the optional reuse-tracking pair (`c:Attesto.CodeStore.take/1`
   returning `{:error, :consumed, meta}` plus
-  `c:Attesto.CodeStore.mark_consumed/2`). On a successful redemption the
-  redeemer records the code's `family_id`/`subject` via `mark_consumed/2`;
-  a later redemption of the same code then yields
-  `{:error, {:reuse, meta}}`, where `meta` carries that first redemption's
-  context so the caller can revoke the descendant family (e.g. via
-  `Attesto.Revocation`). A store that does not implement the pair behaves
-  exactly as before: a re-presented code is `{:error, :invalid_grant}`.
+  `c:Attesto.CodeStore.mark_consumed/2`). The reuse marker is recorded by
+  `finalize/3`, which the caller invokes AFTER the full token response has been
+  successfully built - NOT by `redeem/4` itself. So a code whose redemption
+  validated but whose downstream issuance then failed (a mint or refresh-token
+  fault, a host callback returning a bad principal) is left single-use-spent
+  but NOT reuse-flagged: a replay is `{:error, :invalid_grant}`, and a
+  legitimate retry of a transient failure is never mistaken for a reuse attack
+  (which would wrongly revoke the family). Once `finalize/3` has run, a later
+  redemption of the same code yields `{:error, {:reuse, meta}}`, where `meta`
+  carries that first redemption's context so the caller can revoke the
+  descendant family (e.g. via `Attesto.Revocation`). A store that does not
+  implement the pair behaves exactly as before: a re-presented code is
+  `{:error, :invalid_grant}`.
   This is additive and fail-safe (see `Attesto.CodeStore`).
 
   Pass a `:family_id` to `issue/3` to link the code to the refresh-token
@@ -188,12 +194,13 @@ defmodule Attesto.AuthorizationCode do
   def redeem(store, code, params, opts \\ []) when is_atom(store) and is_binary(code) and is_map(params) do
     case store.take(Secret.hash(code)) do
       {:ok, record} ->
-        redeem_taken(store, Secret.hash(code), record, params, opts)
+        redeem_taken(record, params, opts)
 
       # OAuth 2.0 Security BCP §4.13 / RFC 6749 §4.1.2: a re-presented,
-      # already-redeemed code is the reuse attack signal. Only stores with
-      # reuse tracking return this; surface the first redemption's context
-      # so the caller can revoke the descendant family.
+      # already-FINALIZED code is the reuse attack signal. Only stores with
+      # reuse tracking return this, and only once `finalize/3` has recorded the
+      # marker; surface the first redemption's context so the caller can revoke
+      # the descendant family.
       {:error, :consumed, meta} ->
         {:error, {:reuse, meta}}
 
@@ -202,16 +209,37 @@ defmodule Attesto.AuthorizationCode do
     end
   end
 
-  defp redeem_taken(store, code_hash, %{data: data, expires_at: expires_at}, params, opts) do
+  # `take/1` has already claimed the code (single use). Validate it and return
+  # the grant. The reuse marker is NOT recorded here - the caller records it via
+  # `finalize/3` only after the full token response is built, so a downstream
+  # issuance failure leaves the code spent-but-unfinalized (a replay is
+  # `:invalid_grant`, never a false reuse).
+  defp redeem_taken(%{data: data, expires_at: expires_at}, params, opts) do
     with :ok <- check_expiry(expires_at, opts),
          :ok <- check_client(data, params, opts),
          :ok <- check_redirect_uri(data, params),
          :ok <- check_pkce(data, params),
          :ok <- check_dpop(data, params) do
-      grant = Grant.from_data(data)
-      record_consumption(store, code_hash, grant)
-      {:ok, grant}
+      {:ok, Grant.from_data(data)}
     end
+  end
+
+  @doc """
+  Finalize a fully completed redemption: record the reuse marker
+  (`consumed_success`) for `code`'s grant.
+
+  Call this only AFTER the full token response has been successfully built. It
+  is split from `redeem/4` so redemption is atomic - `redeem/4` claims the code
+  (single use, via `take/1`) and validates it, but defers this marker so a
+  failure in the caller's downstream issuance (mint, refresh-token persistence,
+  a host callback fault) does NOT leave a spent-but-tokenless code recorded as a
+  completed redemption (which would make a legitimate retry look like a reuse
+  attack and revoke the family). A no-op for stores that do not implement
+  `c:Attesto.CodeStore.mark_consumed/2`.
+  """
+  @spec finalize(module(), String.t(), Grant.t()) :: :ok
+  def finalize(store, code, %Grant{} = grant) when is_atom(store) and is_binary(code) do
+    record_consumption(store, Secret.hash(code), grant)
   end
 
   # Record the successful redemption so a re-presentation of the same code
@@ -219,9 +247,7 @@ defmodule Attesto.AuthorizationCode do
   # implement the optional `mark_consumed/2` callback get the marker; the
   # absence of the callback leaves single-use behaviour unchanged and is
   # fail-safe (see `Attesto.CodeStore`). `meta` links the spent code to the
-  # family it spawned so the caller can revoke descendants on a later
-  # replay. A failed redemption never marks consumed: the code is already
-  # spent by `take/1`, and we have no validated family to record.
+  # family it spawned so the caller can revoke descendants on a later replay.
   defp record_consumption(store, code_hash, %Grant{} = grant) do
     if function_exported?(store, :mark_consumed, 2) do
       :ok = store.mark_consumed(code_hash, %{family_id: grant.family_id, subject: grant.subject})
