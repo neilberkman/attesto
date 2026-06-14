@@ -6,6 +6,25 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-14
+
+### Added
+
+- **`Attesto.ClientIdMetadata` — the pure core of Client ID Metadata Documents
+  (CIMD, `draft-ietf-oauth-client-id-metadata-document-01`).** CIMD lets a client
+  identify itself with no prior registration by using an HTTPS URL as its
+  `client_id`; the authorization server dereferences that URL to a JSON client
+  metadata document. This module is the conn-free, HTTP-free half:
+  `client_id_url?/1` and `validate_client_id/1` enforce the draft §2 URL grammar
+  (https, path required, no fragment/userinfo/dot-segments); `validate_document/2`
+  validates a fetched document (the `client_id` must equal the URL, no shared
+  symmetric secret / `client_secret_*` auth method, a non-empty `redirect_uris`)
+  and normalizes it into the same client shape the RFC 7591 registration path
+  produces. The network half (SSRF-guarded fetch, caching) lives in
+  `attesto_phoenix`; this module touches no socket and adds no dependency.
+- `Attesto.Discovery` advertises the `client_id_metadata_document_supported`
+  authorization-server metadata field when the host enables it.
+
 ## [0.6.16] - 2026-06-13
 
 ### Fixed

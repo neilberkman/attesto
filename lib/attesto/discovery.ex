@@ -54,6 +54,7 @@ defmodule Attesto.Discovery do
     pushed_authorization_request_endpoint
     require_signed_request_object
     request_object_signing_alg_values_supported
+    client_id_metadata_document_supported
     service_documentation
     ui_locales_supported
   )a
@@ -76,6 +77,10 @@ defmodule Attesto.Discovery do
     * `:pushed_authorization_request_endpoint` (RFC 9126),
       `:require_pushed_authorization_requests` - the PAR endpoint URL and
       whether the server mandates PAR; included only if given.
+    * `:client_id_metadata_document_supported`
+      (`draft-ietf-oauth-client-id-metadata-document-01` §6) - a boolean
+      advertising whether the server dereferences an HTTPS `client_id` URL to a
+      client metadata document; included only if given.
 
   The accepted host fields are the RFC 8414 §2 allowlist in
   `@host_fields`; the enumeration above is illustrative. Any other opt key

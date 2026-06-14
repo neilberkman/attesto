@@ -92,6 +92,16 @@ defmodule Attesto.DiscoveryTest do
       refute Map.has_key?(meta, "request_object_signing_alg_values_supported")
     end
 
+    test "advertises client_id_metadata_document_supported when supplied" do
+      meta = Discovery.metadata(config(), client_id_metadata_document_supported: true)
+      assert meta["client_id_metadata_document_supported"] == true
+    end
+
+    test "omits client_id_metadata_document_supported when not supplied" do
+      meta = Discovery.metadata(config())
+      refute Map.has_key?(meta, "client_id_metadata_document_supported")
+    end
+
     test "an explicit jwks_uri overrides the derived one" do
       meta = Discovery.metadata(config(), jwks_uri: "https://keys.example.com/jwks")
       assert meta["jwks_uri"] == "https://keys.example.com/jwks"
