@@ -6,6 +6,29 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-06-14
+
+### Security
+
+- **Refresh-rotation grace no longer replays an already-rotated successor.**
+  `RefreshToken.rotate/3`'s within-grace idempotent-retry path returned the
+  parent's cached successor without checking it was still the live, unconsumed
+  leaf. After `A → B → C`, a replay of the captured parent `A` inside the grace
+  window re-issued `B` (and minted a fresh access token from it) instead of
+  detecting reuse — suppressing the OAuth 2.0 Security BCP §4.13 captured-token
+  signal and forking a live chain. The grace retry now confirms the cached
+  successor is still unconsumed; if it has been rotated onward, the replay is
+  treated as reuse and the whole family is revoked.
+
+### Added
+
+- **`Attesto.AuthorizationRequest` carries `dpop_jkt`.** The validated request
+  now exposes the RFC 9449 §10 `dpop_jkt` parameter, read from the EFFECTIVE
+  (post-`request`-object-merge) params — so a signed request object's `dpop_jkt`
+  is authoritative and an unsigned outer-query value is ignored when a request
+  object is present. (Consumed by `attesto_phoenix`'s authorization endpoint,
+  which previously read it from the raw outer query.)
+
 ## [0.7.0] - 2026-06-14
 
 ### Added

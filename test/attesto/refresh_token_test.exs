@@ -165,6 +165,24 @@ defmodule Attesto.RefreshTokenTest do
       assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t0)
     end
 
+    test "replaying the parent WITHIN grace after its successor was rotated revokes the family" do
+      # A -> B -> C: the parent A's cached successor B is consumed by the B -> C
+      # rotation. A within-grace replay of A must NOT idempotently re-issue the
+      # now-stale B (the lost-response retry only applies while B is unused); the
+      # chain has advanced, so this is a genuine reuse and the family is revoked.
+      {:ok, %{token: t0}} = RefreshToken.issue(RefreshStore.ETS, context(), now: 1_000)
+      {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0, now: 1_000)
+      {:ok, %{token: t2}} = RefreshToken.rotate(RefreshStore.ETS, t1, now: 1_001)
+
+      # now=1_002 is inside the default 10s grace (A consumed at 1_000), yet A's
+      # successor B (t1) is already consumed: reuse, not an idempotent retry.
+      assert {:error, :reuse_detected} =
+               RefreshToken.rotate(RefreshStore.ETS, t0, now: 1_002)
+
+      # The family is torn down: the live leaf t2 no longer rotates.
+      assert {:error, :invalid_grant} = RefreshToken.rotate(RefreshStore.ETS, t2)
+    end
+
     test "a consumed-token retry with a different client revokes the family" do
       {:ok, %{token: t0}} = RefreshToken.issue(RefreshStore.ETS, context(%{client_id: "client-a"}))
       {:ok, %{token: t1}} = RefreshToken.rotate(RefreshStore.ETS, t0, client_id: "client-a")

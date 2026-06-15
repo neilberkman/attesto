@@ -169,7 +169,8 @@ defmodule Attesto.RefreshToken do
          :ok <- check_client(record.data, opts),
          :ok <- check_dpop(record.data, opts),
          {:ok, scope} <- resolve_scope(record.data, opts),
-         {:ok, successor} <- same_successor(record, scope) do
+         {:ok, successor} <- same_successor(record, scope),
+         :ok <- successor_still_live?(store, successor) do
       {:ok,
        %{
          token: successor.token,
@@ -181,6 +182,20 @@ defmodule Attesto.RefreshToken do
       _ ->
         :ok = store.revoke_family(record.family_id)
         {:error, :reuse_detected}
+    end
+  end
+
+  # OAuth 2.0 Security BCP §4.13.2: the rotation-grace idempotent retry is safe
+  # ONLY while the cached successor is itself still the live, unconsumed leaf -
+  # i.e. the client genuinely lost the original rotation response and never used
+  # the successor. If the successor has since been rotated (consumed) or is gone,
+  # the chain has demonstrably advanced past it, so replaying the parent is a
+  # true reuse of an already-used token, not a lost-response retry: fall through
+  # to family revocation rather than re-issuing the (now stale) successor.
+  defp successor_still_live?(store, successor) do
+    case store.get(Secret.hash(successor.token)) do
+      {:ok, %{consumed: false}} -> :ok
+      _ -> {:error, :successor_consumed}
     end
   end
 

@@ -112,6 +112,34 @@ defmodule Attesto.AuthorizationRequestTest do
              } = req
     end
 
+    test "reads dpop_jkt from the query on a plain (non-JAR) request (RFC 9449 §10)" do
+      assert {:ok, req} = validate(base_params(%{"dpop_jkt" => "thumb-abc"}))
+      assert req.dpop_jkt == "thumb-abc"
+    end
+
+    test "reads dpop_jkt from the signed request object, ignoring the outer query" do
+      # RFC 9101 §6.3 / RFC 9449 §10: the signed object's params are
+      # authoritative. An attacker-supplied outer dpop_jkt MUST NOT override the
+      # value the client signed (nor bind the code when the client signed none).
+      {request, client_jwk} =
+        signed_request_object(fapi_request_claims(%{"dpop_jkt" => "signed-thumbprint"}))
+
+      assert {:ok, req} =
+               AuthorizationRequest.validate(
+                 %{
+                   "request" => request,
+                   "client_id" => "client-123",
+                   "redirect_uri" => @redirect_uri,
+                   "dpop_jkt" => "attacker-thumbprint"
+                 },
+                 registered_redirect_uris: @registered,
+                 request_object_jwks: %{"keys" => [client_jwk]},
+                 request_object_audience: @issuer
+               )
+
+      assert req.dpop_jkt == "signed-thumbprint"
+    end
+
     test "flags a plain OAuth (non-OIDC) request when the openid scope is absent" do
       assert {:ok, req} = validate(base_params(%{"scope" => "profile email"}))
       refute req.openid?

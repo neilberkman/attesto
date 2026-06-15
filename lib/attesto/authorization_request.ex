@@ -98,7 +98,8 @@ defmodule Attesto.AuthorizationRequest do
           max_age: non_neg_integer() | nil,
           claims: map(),
           acr_values: [String.t()],
-          response_mode: String.t() | nil
+          response_mode: String.t() | nil,
+          dpop_jkt: String.t() | nil
         }
 
   # `code_challenge`/`code_challenge_method` are NOT enforced keys: PKCE is
@@ -125,7 +126,8 @@ defmodule Attesto.AuthorizationRequest do
     openid?: false,
     prompt: [],
     scope: [],
-    response_mode: nil
+    response_mode: nil,
+    dpop_jkt: nil
   ]
 
   @typedoc """
@@ -228,6 +230,16 @@ defmodule Attesto.AuthorizationRequest do
   # OIDC Core §3.1.2.1: an OpenID Connect Authentication Request is one whose
   # (effective) `scope` carries the reserved `openid` value.
   defp oidc_request?(params), do: @openid_scope in parse_space_list(Map.get(params, "scope"))
+
+  # RFC 9449 §10: the `dpop_jkt` authorization-request parameter (the JWK SHA-256
+  # thumbprint the issued code is bound to). Read from the effective params so a
+  # signed request object's value wins; the format is enforced at code redemption.
+  defp dpop_jkt(params) do
+    case Map.get(params, "dpop_jkt") do
+      jkt when is_binary(jkt) and jkt != "" -> jkt
+      _ -> nil
+    end
+  end
 
   @doc """
   The response modes this authorization-code server accepts (OAuth 2.0 Response
@@ -379,7 +391,13 @@ defmodule Attesto.AuthorizationRequest do
          max_age: max_age,
          claims: claims,
          acr_values: parse_space_list(Map.get(params, "acr_values")),
-         response_mode: response_mode
+         response_mode: response_mode,
+         # RFC 9449 §10: the DPoP key thumbprint to bind the issued code to,
+         # read from the EFFECTIVE params - so a signed request object's
+         # `dpop_jkt` is authoritative and an unsigned outer-query `dpop_jkt` is
+         # ignored when a request object is present (the object replaces the
+         # outer params above). A bare/empty value is treated as absent.
+         dpop_jkt: dpop_jkt(params)
        }}
     else
       # JARM §2.3 / FAPI 2.0 Message Signing §5.4: a redirectable error must be
